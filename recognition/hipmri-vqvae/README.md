@@ -2,7 +2,7 @@
 
 ## Project status
 
-Stage 3 experiment pipeline. The downloaded HipMRI slices have been inspected, the official patient-level splits have been verified, and end-to-end training, validation, checkpoint loading, metric export, and failure-case visualisation have been tested with both model architectures. No final trained-model results are claimed yet.
+Stage 4 experiment-ready pipeline. The downloaded HipMRI slices have been inspected, the official patient-level splits have been verified, and end-to-end training, validation, checkpoint loading, metric export, failure-case visualisation, and revised VQ codebook behaviour have been tested on an A100 GPU. No final trained-model results are claimed yet.
 
 ## Research question
 
@@ -128,7 +128,9 @@ python train.py --smoke-test
 
 The data-loader verification produced batches with shape `[N, 1, 256, 144]`, `float32` MRI values in `[0, 1]`, and integer masks. Both VAE and VQ-VAE returned reconstructions of the same shape.
 
-An intentionally limited CPU run also verified the full artifact pipeline. The ConvVAE completed two epochs over 6 training and 3 validation batches per epoch, selected epoch 2 as the best checkpoint, and reloaded it using PyTorch's safe `weights_only=True` mode. The first A100 feasibility run completed both models and all evaluation outputs in 65 seconds, but exposed a collapsed VQ codebook with only 1/512 active entries. That diagnostic result motivated the deterministic data-dependent codebook initialisation and pre-quantisation normalisation above and must not be presented as final model-quality evidence. The revised sanity script uses five limited VQ-VAE epochs so that codebook adaptation is assessed rather than judged from its first epoch alone. A second GPU sanity run is required before either formal job is launched.
+An intentionally limited CPU run also verified the full artifact pipeline. The ConvVAE completed two epochs over 6 training and 3 validation batches per epoch, selected epoch 2 as the best checkpoint, and reloaded it using PyTorch's safe `weights_only=True` mode. The first A100 feasibility run completed both models and all evaluation outputs in 65 seconds, but exposed a collapsed VQ codebook with only 1/512 active entries. That diagnostic result motivated the deterministic data-dependent codebook initialisation and pre-quantisation normalisation above.
+
+The revised A100 sanity job `642126` completed successfully in 46 seconds with exit code `0:0`, an empty error log, and peak host memory of about 1.74 GiB. Across five deliberately limited VQ-VAE epochs, validation active-code count changed from 7 to 16, 25, 29, and 27; validation perplexity increased from 1.66 to 7.78; PSNR increased from 10.72 to 17.64 dB; and SSIM increased from 0.1257 to 0.2977. This confirms that the single-code collapse was removed, although the remaining sparse utilisation must still be monitored during formal training. All sanity results are diagnostic only and must not be presented as final model-quality evidence.
 
 ## Planned evaluation
 
@@ -152,9 +154,8 @@ An intentionally limited CPU run also verified the full artifact pipeline. The C
 
 ## Immediate next steps
 
-1. Re-run the short GPU sanity experiment and confirm that the VQ-VAE uses multiple codes.
-2. Freeze a justified epoch, batch, and codebook budget from the sanity evidence.
-3. Train the ConvVAE baseline under the frozen budget.
-4. Train the VQ-VAE using the same data, hardware, and budget while monitoring codebook collapse.
-5. Evaluate both frozen checkpoints once on the untouched test patients.
-6. Record failure cases, resource statistics, and final engineering recommendations.
+1. Train the ConvVAE baseline for the frozen 40-epoch, batch-size-64 budget.
+2. Train the VQ-VAE with the same data, hardware, optimiser, and epoch/batch budget while monitoring codebook use.
+3. Compare both validation histories and freeze one checkpoint per model without accessing test data.
+4. Evaluate both frozen checkpoints once on the untouched test patients.
+5. Record failure cases, resource statistics, and final engineering recommendations.
