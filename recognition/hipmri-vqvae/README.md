@@ -14,6 +14,12 @@ Under the same patient-level data split, preprocessing, training budget, and eva
 - **Hard model:** VQ-VAE with a learned discrete codebook and straight-through estimator.
 
 The encoder and decoder capacity are intentionally similar so that the comparison focuses on continuous versus vector-quantised latent representations.
+The VQ codebook is initialised once from diverse encoder vectors in the first
+training batch using deterministic farthest-point sampling. This avoids the
+single-code collapse observed with the original narrow random initialisation;
+after that first batch, the embeddings are learned by the standard codebook and
+commitment losses. Batch normalisation before quantisation keeps encoder scales
+stable while the codebook and encoder co-adapt.
 
 ## Verified dataset inventory
 
@@ -122,7 +128,7 @@ python train.py --smoke-test
 
 The data-loader verification produced batches with shape `[N, 1, 256, 144]`, `float32` MRI values in `[0, 1]`, and integer masks. Both VAE and VQ-VAE returned reconstructions of the same shape.
 
-An intentionally limited CPU run also verified the full artifact pipeline. The ConvVAE completed two epochs over 6 training and 3 validation batches per epoch, selected epoch 2 as the best checkpoint, and reloaded it using PyTorch's safe `weights_only=True` mode. A one-epoch VQ-VAE check verified codebook statistics and exposed the expected near-initial code usage of 2/512 active entries. These observations verify software behaviour only; they are not model-quality evidence and must not be compared as final results.
+An intentionally limited CPU run also verified the full artifact pipeline. The ConvVAE completed two epochs over 6 training and 3 validation batches per epoch, selected epoch 2 as the best checkpoint, and reloaded it using PyTorch's safe `weights_only=True` mode. The first A100 feasibility run completed both models and all evaluation outputs in 65 seconds, but exposed a collapsed VQ codebook with only 1/512 active entries. That diagnostic result motivated the deterministic data-dependent codebook initialisation and pre-quantisation normalisation above and must not be presented as final model-quality evidence. The revised sanity script uses five limited VQ-VAE epochs so that codebook adaptation is assessed rather than judged from its first epoch alone. A second GPU sanity run is required before either formal job is launched.
 
 ## Planned evaluation
 
@@ -146,8 +152,8 @@ An intentionally limited CPU run also verified the full artifact pipeline. The C
 
 ## Immediate next steps
 
-1. Prepare Rangpur interactive and Slurm commands with a fixed resource budget.
-2. Run a short GPU feasibility experiment and choose a justified epoch/batch budget.
+1. Re-run the short GPU sanity experiment and confirm that the VQ-VAE uses multiple codes.
+2. Freeze a justified epoch, batch, and codebook budget from the sanity evidence.
 3. Train the ConvVAE baseline under the frozen budget.
 4. Train the VQ-VAE using the same data, hardware, and budget while monitoring codebook collapse.
 5. Evaluate both frozen checkpoints once on the untouched test patients.

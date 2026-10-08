@@ -433,6 +433,8 @@ def train(args: argparse.Namespace) -> None:
         codebook_text = ""
         if args.model == "vqvae":
             codebook_text = (
+                f" train_perplexity={train_statistics['codebook_perplexity']:.2f}"
+                f" train_active_codes={int(train_statistics['active_codes'])}"
                 f" val_perplexity={validation_statistics['codebook_perplexity']:.2f}"
                 f" val_active_codes={int(validation_statistics['active_codes'])}"
             )

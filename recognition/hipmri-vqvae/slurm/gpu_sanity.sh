@@ -56,7 +56,7 @@ python train.py \
   --model vqvae \
   --manifest "$MANIFEST" \
   --output "$VQVAE_RUN" \
-  --epochs 1 \
+  --epochs 5 \
   --batch-size 16 \
   --num-workers 4 \
   --max-train-batches 20 \

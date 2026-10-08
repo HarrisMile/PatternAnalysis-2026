@@ -82,7 +82,7 @@ class ConvVAE(nn.Module):
 
 
 class VectorQuantizer(nn.Module):
-    """Nearest-neighbour codebook with the straight-through estimator."""
+    """Nearest-neighbour codebook with data-dependent initialisation."""
 
     def __init__(self, num_embeddings: int, embedding_dim: int, commitment_cost: float = 0.25) -> None:
         super().__init__()
@@ -91,6 +91,40 @@ class VectorQuantizer(nn.Module):
         self.commitment_cost = commitment_cost
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         nn.init.uniform_(self.embedding.weight, -1.0 / num_embeddings, 1.0 / num_embeddings)
+        self.register_buffer("codebook_initialized", torch.tensor(False, dtype=torch.bool))
+
+    @torch.no_grad()
+    def _initialise_from_batch(self, flat_inputs: Tensor) -> None:
+        """Seed the codebook with diverse vectors from the first encoder batch."""
+
+        if flat_inputs.shape[0] == 0:
+            raise ValueError("Cannot initialise a codebook from an empty latent batch.")
+
+        candidates = flat_inputs.detach()
+        centroids = torch.empty(
+            self.num_embeddings,
+            self.embedding_dim,
+            device=candidates.device,
+            dtype=candidates.dtype,
+        )
+        mean = candidates.mean(dim=0, keepdim=True)
+        next_index = (candidates - mean).pow(2).sum(dim=1).argmax()
+        min_distances = torch.full(
+            (candidates.shape[0],),
+            float("inf"),
+            device=candidates.device,
+            dtype=candidates.dtype,
+        )
+
+        for code_index in range(self.num_embeddings):
+            centroid = candidates[next_index]
+            centroids[code_index].copy_(centroid)
+            distances = (candidates - centroid).pow(2).sum(dim=1)
+            min_distances = torch.minimum(min_distances, distances)
+            next_index = min_distances.argmax()
+
+        self.embedding.weight.copy_(centroids)
+        self.codebook_initialized.fill_(True)
 
     def forward(self, inputs: Tensor) -> Dict[str, Tensor]:
         if inputs.shape[1] != self.embedding_dim:
@@ -100,6 +134,8 @@ class VectorQuantizer(nn.Module):
 
         channels_last = inputs.permute(0, 2, 3, 1).contiguous()
         flat_inputs = channels_last.view(-1, self.embedding_dim)
+        if self.training and not bool(self.codebook_initialized.item()):
+            self._initialise_from_batch(flat_inputs)
         embedding_weight = self.embedding.weight
         distances = (
             flat_inputs.pow(2).sum(dim=1, keepdim=True)
@@ -143,7 +179,10 @@ class VQVAE(nn.Module):
     ) -> None:
         super().__init__()
         self.encoder = Encoder(in_channels, hidden_channels)
-        self.pre_quantizer = nn.Conv2d(self.encoder.out_channels, embedding_dim, 1)
+        self.pre_quantizer = nn.Sequential(
+            nn.Conv2d(self.encoder.out_channels, embedding_dim, 1),
+            nn.BatchNorm2d(embedding_dim),
+        )
         self.quantizer = VectorQuantizer(num_embeddings, embedding_dim, commitment_cost)
         self.decoder = Decoder(embedding_dim, in_channels, hidden_channels)
 
