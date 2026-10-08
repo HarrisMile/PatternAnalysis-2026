@@ -2,6 +2,8 @@
 recognition/hipmri-vqvae/data/
 recognition/hipmri-vqvae/outputs/
 recognition/hipmri-vqvae/predictions/
+*.out
+*.err
 
 # Python caches and local environments
 __pycache__/

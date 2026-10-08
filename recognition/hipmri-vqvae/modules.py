@@ -72,7 +72,7 @@ class ConvVAE(nn.Module):
         features = self.encoder(images)
         mu = self.mu_head(features)
         logvar = self.logvar_head(features)
-        latents = self.reparameterise(mu, logvar)
+        latents = self.reparameterise(mu, logvar) if self.training else mu
         return {
             "reconstruction": self.decoder(latents),
             "mu": mu,

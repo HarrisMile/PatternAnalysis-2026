@@ -98,6 +98,20 @@ python predict.py \
 
 The command saves per-sample MSE, MAE, PSNR, and windowed SSIM to `metrics.csv`, aggregated values to `summary.json`, and a panel of the highest-MSE cases to `worst_reconstructions.png`. VQ-VAE evaluations additionally report codebook perplexity, active codes, dead codes, and active-code fraction. The untouched test split should be evaluated only after both final models and the comparison protocol have been frozen.
 
+## Rangpur execution
+
+The Rangpur workflow reuses the `comp3710lab2` Conda environment and the course account/partition pattern that was verified in earlier COMP3710 work. A live check on 8 October 2026 confirmed that the `comp3710` partition is available with A100 GPUs, the user account is associated with the `comp3710` Slurm account under normal QOS, and the existing environment contains CUDA-enabled PyTorch 2.14.0. `nibabel` was the only required package missing before installing this project's requirements. Because cluster configuration can change, run `sinfo` before every new submission and compare it with the current [EAIT Compute documentation](https://student.eait.uq.edu.au/infrastructure/compute/).
+
+The complete login, setup, submission, monitoring, and log-inspection sequence is in `RANGPUR_COMMANDS.txt`. Three Slurm scripts are provided:
+
+- `slurm/gpu_sanity.sh`: short validation-only ConvVAE and VQ-VAE GPU pipeline check;
+- `slurm/train_vae.sh`: formal ConvVAE baseline training and validation evaluation;
+- `slurm/train_vqvae.sh`: formal VQ-VAE training and validation evaluation under the same defaults.
+
+Formal jobs default to 40 epochs, batch size 64, learning rate `2e-4`, seed 3710, four data workers, and one GPU. These values remain provisional until the short GPU run confirms runtime, memory use, and codebook behaviour. They can be overridden through exported Slurm environment variables without editing the scripts.
+
+Every epoch writes `last.pt`; the best validation checkpoint remains in `best.pt`. If Slurm requeues a job, the scripts detect `last.pt` and pass `--resume`. The trainer restores the model, optimiser, epoch history, and PyTorch random state. A local interrupted-versus-continuous test produced identical metric histories and exactly equal final model weights.
+
 ## Smoke tests
 
 Software-only model test:
@@ -126,6 +140,8 @@ An intentionally limited CPU run also verified the full artifact pipeline. The C
 - `metrics.py`: shared MSE, MAE, PSNR, and windowed SSIM implementation.
 - `train.py`: training, validation, best-checkpoint selection, configuration, and history logging.
 - `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
+- `slurm/`: Rangpur sanity, baseline, and VQ-VAE batch scripts with automatic resume.
+- `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 - `README.md`: experiment protocol, commands, evidence, and findings.
 
 ## Immediate next steps

@@ -1,0 +1,67 @@
+## HipMRI VQ-VAE Rangpur command checklist
+## Run one stage at a time and inspect its output before continuing
+
+## Stage 1: Log in from the local Mac terminal
+ssh s4984233@rangpur.compute.eait.uq.edu.au
+
+## Stage 2: Verify the live scheduler configuration
+sinfo -o '%P|%a|%l|%G|%D|%t'
+sacctmgr -n show assoc user="$USER" format=Account,Partition,QOS
+
+## Stage 3: Clone the project for the first time
+cd "$HOME"
+git clone --branch topic-recognition git@github.com:HarrisMile/PatternAnalysis-2026.git
+
+## For later updates, use this instead of cloning again
+cd "$HOME/PatternAnalysis-2026"
+git switch topic-recognition
+git pull --ff-only origin topic-recognition
+
+## Stage 4: Reuse the working COMP3710 environment from Assignment 2
+source "$HOME/miniconda3/bin/activate"
+conda activate comp3710lab2
+cd "$HOME/PatternAnalysis-2026/recognition/hipmri-vqvae"
+python -m pip install -r requirements.txt
+
+## Confirm software, source data, and script syntax
+python -c "import nibabel, torch; print('PyTorch:', torch.__version__); print('nibabel:', nibabel.__version__)"
+test -d /home/groups/comp3710/HipMRI_Study_open/keras_slices_data && echo 'HipMRI data is ready'
+bash -n slurm/gpu_sanity.sh slurm/train_vae.sh slurm/train_vqvae.sh
+
+## Stage 5: Submit the short GPU sanity job on the verified comp3710 partition
+SANITY_JOB=$(sbatch --parsable slurm/gpu_sanity.sh)
+SANITY_JOB=${SANITY_JOB%%;*}
+echo "$SANITY_JOB"
+squeue -j "$SANITY_JOB" -o '%.18i %.12P %.18j %.2t %.10M %R'
+
+## Inspect the completed short job
+sacct -j "$SANITY_JOB" --format=JobID,JobName,Partition,State,Elapsed,ExitCode,MaxRSS
+tail -n 120 "hipmri_sanity_${SANITY_JOB}.out"
+tail -n 120 "hipmri_sanity_${SANITY_JOB}.err"
+
+## Inspect sanity artifacts before choosing the formal epoch and batch budget
+cat "outputs/rangpur-sanity-vae-${SANITY_JOB}/summary.json"
+cat "outputs/rangpur-sanity-vqvae-${SANITY_JOB}/summary.json"
+cat "predictions/rangpur-sanity-vqvae-${SANITY_JOB}/summary.json"
+
+## Stage 6: Submit formal jobs only after the sanity evidence is accepted
+VAE_JOB=$(sbatch --parsable slurm/train_vae.sh)
+VAE_JOB=${VAE_JOB%%;*}
+echo "$VAE_JOB"
+
+## Run VQ-VAE after the baseline succeeds so both jobs do not compete for GPUs
+VQVAE_JOB=$(sbatch --parsable --dependency=afterok:"$VAE_JOB" slurm/train_vqvae.sh)
+VQVAE_JOB=${VQVAE_JOB%%;*}
+echo "$VQVAE_JOB"
+
+## Monitor formal jobs and inspect accounting after completion
+squeue -u "$USER" -o '%.18i %.12P %.18j %.2t %.10M %R'
+sacct -j "$VAE_JOB,$VQVAE_JOB" --format=JobID,JobName,Partition,State,Elapsed,ExitCode,MaxRSS
+tail -n 120 "hipmri_vae_${VAE_JOB}.out"
+tail -n 120 "hipmri_vae_${VAE_JOB}.err"
+tail -n 120 "hipmri_vqvae_${VQVAE_JOB}.out"
+tail -n 120 "hipmri_vqvae_${VQVAE_JOB}.err"
+
+## The scripts automatically resume from last.pt if a requeued job restarts
+## Re-run sinfo before future submissions because cluster partitions can change
+## Do not evaluate the test split until both final configurations are frozen

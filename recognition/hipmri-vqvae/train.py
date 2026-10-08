@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=("vae", "vqvae"), default="vae")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path, default=Path("outputs/run"))
+    parser.add_argument("--resume", type=Path)
     parser.add_argument("--epochs", type=positive_int, default=20)
     parser.add_argument("--batch-size", type=positive_int, default=16)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
@@ -239,6 +240,16 @@ def save_history(path: Path, rows: list[Dict[str, float]]) -> None:
         writer.writerows(rows)
 
 
+def load_history(path: Path) -> list[Dict[str, float]]:
+    if not path.is_file():
+        return []
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        return [
+            {key: float(value) for key, value in row.items()}
+            for row in csv.DictReader(handle)
+        ]
+
+
 def peak_memory_mb(device: torch.device) -> Optional[float]:
     if device.type == "cuda":
         return torch.cuda.max_memory_allocated(device) / (1024**2)
@@ -275,7 +286,18 @@ def train(args: argparse.Namespace) -> None:
         raise ValueError("--learning-rate must be positive.")
     if args.vae_beta < 0:
         raise ValueError("--vae-beta cannot be negative.")
-    if args.output.exists() and any(args.output.iterdir()) and not args.overwrite:
+    if args.resume is not None and args.overwrite:
+        raise ValueError("--resume and --overwrite cannot be used together.")
+    if args.resume is not None and not args.resume.is_file():
+        raise FileNotFoundError(f"Resume checkpoint not found: {args.resume}")
+    if args.resume is not None and args.output.resolve() != args.resume.parent.resolve():
+        raise ValueError("--output must be the resume checkpoint's directory.")
+    if (
+        args.resume is None
+        and args.output.exists()
+        and any(args.output.iterdir())
+        and not args.overwrite
+    ):
         raise FileExistsError(
             f"Output directory is not empty: {args.output}. Use --overwrite to reuse it."
         )
@@ -286,14 +308,6 @@ def train(args: argparse.Namespace) -> None:
     pin_memory = device.type == "cuda"
     train_dataset = HipMRISliceDataset(args.manifest, "train")
     validation_dataset = HipMRISliceDataset(args.manifest, "validation")
-    train_loader = make_loader(
-        train_dataset,
-        args.batch_size,
-        True,
-        args.num_workers,
-        args.seed,
-        pin_memory,
-    )
     validation_loader = make_loader(
         validation_dataset,
         args.batch_size,
@@ -305,6 +319,33 @@ def train(args: argparse.Namespace) -> None:
     model = build_model(args.model).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     parameter_count = count_parameters(model)
+    history: list[Dict[str, float]] = []
+    best_validation_loss = float("inf")
+    best_epoch = 0
+    start_epoch = 1
+
+    if args.resume is not None:
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
+        if checkpoint["model_name"] != args.model:
+            raise ValueError(
+                f"Checkpoint model is {checkpoint['model_name']}, requested model is {args.model}."
+            )
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        torch.set_rng_state(checkpoint["torch_rng_state"])
+        if device.type == "cuda" and checkpoint.get("cuda_rng_states") is not None:
+            torch.cuda.set_rng_state_all(checkpoint["cuda_rng_states"])
+        best_validation_loss = float(checkpoint["best_validation_loss"])
+        best_epoch = int(checkpoint["best_epoch"])
+        start_epoch = int(checkpoint["epoch"]) + 1
+        history = load_history(args.output / "history.csv")
+        if history and int(history[-1]["epoch"]) != start_epoch - 1:
+            raise ValueError("history.csv does not match the resume checkpoint epoch.")
+        if start_epoch > args.epochs:
+            raise ValueError(
+                f"Checkpoint already completed epoch {start_epoch - 1}; "
+                f"--epochs must be at least {start_epoch}."
+            )
 
     config = vars(args).copy()
     config.update(
@@ -322,14 +363,19 @@ def train(args: argparse.Namespace) -> None:
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    history: list[Dict[str, float]] = []
-    best_validation_loss = float("inf")
-    best_epoch = 0
     synchronize(device)
     training_started = time.perf_counter()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         epoch_started = time.perf_counter()
+        train_loader = make_loader(
+            train_dataset,
+            args.batch_size,
+            True,
+            args.num_workers,
+            args.seed + epoch,
+            pin_memory,
+        )
         train_statistics = run_epoch(
             model,
             train_loader,
@@ -375,6 +421,10 @@ def train(args: argparse.Namespace) -> None:
             "best_validation_loss": best_validation_loss,
             "seed": args.seed,
             "config": _json_safe(config),
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_states": torch.cuda.get_rng_state_all()
+            if device.type == "cuda"
+            else None,
         }
         torch.save(checkpoint, args.output / "last.pt")
         if is_best:
@@ -395,12 +445,14 @@ def train(args: argparse.Namespace) -> None:
         )
 
     synchronize(device)
-    training_seconds = time.perf_counter() - training_started
+    segment_training_seconds = time.perf_counter() - training_started
+    recorded_epoch_seconds = sum(row["epoch_seconds"] for row in history)
     summary = {
         "best_epoch": best_epoch,
         "best_validation_loss": best_validation_loss,
-        "completed_epochs": args.epochs,
-        "training_seconds": training_seconds,
+        "completed_epochs": int(history[-1]["epoch"]),
+        "training_seconds": recorded_epoch_seconds,
+        "latest_segment_seconds": segment_training_seconds,
         "trainable_parameters": parameter_count,
         "peak_accelerator_memory_mb": peak_memory_mb(device),
         "device": str(device),
