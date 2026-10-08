@@ -1,0 +1,12 @@
+# Local HipMRI data and generated experiment artifacts
+recognition/hipmri-vqvae/data/
+recognition/hipmri-vqvae/outputs/
+recognition/hipmri-vqvae/predictions/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# macOS metadata
+.DS_Store

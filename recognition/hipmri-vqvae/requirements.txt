@@ -1,0 +1,3 @@
+nibabel>=5.4,<6
+numpy>=1.25,<3
+torch>=2.2
