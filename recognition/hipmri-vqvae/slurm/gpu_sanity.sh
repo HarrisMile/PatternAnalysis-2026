@@ -4,7 +4,6 @@
 #SBATCH --account=comp3710
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
 #SBATCH --time=00:20:00
 #SBATCH --output=hipmri_sanity_%j.out
 #SBATCH --error=hipmri_sanity_%j.err
