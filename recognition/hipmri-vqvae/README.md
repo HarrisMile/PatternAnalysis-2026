@@ -2,7 +2,7 @@
 
 ## Project status
 
-Stage 2 data pipeline. The downloaded HipMRI slices have been inspected, the official patient-level splits have been verified, and the NIfTI loader has been tested with both model architectures. No trained-model results are claimed yet.
+Stage 3 experiment pipeline. The downloaded HipMRI slices have been inspected, the official patient-level splits have been verified, and end-to-end training, validation, checkpoint loading, metric export, and failure-case visualisation have been tested with both model architectures. No final trained-model results are claimed yet.
 
 ## Research question
 
@@ -56,6 +56,48 @@ python dataset.py \
 
 The generated manifest contains relative MRI/mask paths plus patient, week, slice, and split identifiers. Both the raw data and manifest remain under the ignored `data/` directory.
 
+## Training and validation
+
+`train.py` evaluates the validation split after every epoch and writes:
+
+- `best.pt`: checkpoint with the lowest validation loss;
+- `last.pt`: checkpoint from the most recent epoch;
+- `history.csv`: per-epoch loss, reconstruction metrics, timings, and VQ codebook statistics;
+- `config.json`: data, optimiser, reproducibility, software, device, and parameter-count settings;
+- `summary.json`: best epoch, runtime, parameter count, device, and peak CUDA memory when available.
+
+Example local sanity run:
+
+```bash
+python train.py \
+  --model vae \
+  --manifest data/manifest.csv \
+  --output outputs/sanity-vae \
+  --epochs 2 \
+  --batch-size 4 \
+  --max-train-batches 6 \
+  --max-validation-batches 3 \
+  --device cpu
+```
+
+The batch-limit options mark the run as limited in `summary.json`. They are for pipeline checks only and must not be used for final model claims.
+
+## Checkpoint evaluation
+
+During development, evaluate only the validation split:
+
+```bash
+python predict.py \
+  --checkpoint outputs/sanity-vae/best.pt \
+  --manifest data/manifest.csv \
+  --split validation \
+  --output predictions/sanity-vae \
+  --max-batches 3 \
+  --device cpu
+```
+
+The command saves per-sample MSE, MAE, PSNR, and windowed SSIM to `metrics.csv`, aggregated values to `summary.json`, and a panel of the highest-MSE cases to `worst_reconstructions.png`. VQ-VAE evaluations additionally report codebook perplexity, active codes, dead codes, and active-code fraction. The untouched test split should be evaluated only after both final models and the comparison protocol have been frozen.
+
 ## Smoke tests
 
 Software-only model test:
@@ -64,7 +106,9 @@ Software-only model test:
 python train.py --smoke-test
 ```
 
-The data-loader verification performed during Stage 2 produced batches with shape `[N, 1, 256, 144]`, `float32` MRI values in `[0, 1]`, and integer masks. Both VAE and VQ-VAE returned reconstructions of the same shape. These checks verify wiring only; they are not experimental results.
+The data-loader verification produced batches with shape `[N, 1, 256, 144]`, `float32` MRI values in `[0, 1]`, and integer masks. Both VAE and VQ-VAE returned reconstructions of the same shape.
+
+An intentionally limited CPU run also verified the full artifact pipeline. The ConvVAE completed two epochs over 6 training and 3 validation batches per epoch, selected epoch 2 as the best checkpoint, and reloaded it using PyTorch's safe `weights_only=True` mode. A one-epoch VQ-VAE check verified codebook statistics and exposed the expected near-initial code usage of 2/512 active entries. These observations verify software behaviour only; they are not model-quality evidence and must not be compared as final results.
 
 ## Planned evaluation
 
@@ -79,14 +123,16 @@ The data-loader verification performed during Stage 2 produced batches with shap
 
 - `modules.py`: ConvVAE, vector quantiser, VQ-VAE, and loss functions.
 - `dataset.py`: NIfTI discovery, pairing, leakage checks, manifest generation, and loading.
-- `train.py`: common training entry point and random-input smoke test.
-- `predict.py`: checkpoint loading and test reconstruction export.
+- `metrics.py`: shared MSE, MAE, PSNR, and windowed SSIM implementation.
+- `train.py`: training, validation, best-checkpoint selection, configuration, and history logging.
+- `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
 - `README.md`: experiment protocol, commands, evidence, and findings.
 
 ## Immediate next steps
 
-1. Add validation loss, checkpoint selection, metrics, and configuration logging.
-2. Train the ConvVAE baseline under a fixed budget.
-3. Train the VQ-VAE using the same data and compute budget.
-4. Evaluate both checkpoints on the untouched test patients.
-5. Record failure cases, resource statistics, and final engineering recommendations.
+1. Prepare Rangpur interactive and Slurm commands with a fixed resource budget.
+2. Run a short GPU feasibility experiment and choose a justified epoch/batch budget.
+3. Train the ConvVAE baseline under the frozen budget.
+4. Train the VQ-VAE using the same data, hardware, and budget while monitoring codebook collapse.
+5. Evaluate both frozen checkpoints once on the untouched test patients.
+6. Record failure cases, resource statistics, and final engineering recommendations.
