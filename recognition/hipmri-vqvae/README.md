@@ -2,7 +2,7 @@
 
 ## Project status
 
-Stage 4 experiment-ready pipeline. The downloaded HipMRI slices have been inspected, the official patient-level splits have been verified, and end-to-end training, validation, checkpoint loading, metric export, failure-case visualisation, and revised VQ codebook behaviour have been tested on an A100 GPU. No final trained-model results are claimed yet.
+Stage 5 completed experiment. The patient-disjoint data pipeline, both 40-epoch model runs, validation-only checkpoint selection, and guarded one-time test evaluation have completed successfully on A100 GPUs. The final metrics below are now frozen; no post-test model tuning or retraining is permitted.
 
 ## Research question
 
@@ -155,14 +155,46 @@ perplexity 10.30. It therefore avoids total collapse but learns a highly sparse
 discrete representation. This is a substantive negative result, not a reason
 to change the model after seeing validation outcomes.
 
-## Planned evaluation
+## Final one-time test results
+
+Slurm job `644134` evaluated all 540 slices from held-out patients 040–042 once,
+completed in 22 seconds with exit code `0:0`, and produced an empty error log.
+The frozen checkpoint hashes were:
+
+- ConvVAE: `1da683f0d4afcf7704f236827380dde4f1999acfbff7f3256ddef75224ea63e1`
+- VQ-VAE: `5f1aa0c74259f4a7d3614ef9fba302c34d1cfcb96ac67052c5deec52325cf8a9`
+
+| Model | MSE | MAE | PSNR | SSIM | Foreground PSNR | Foreground SSIM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ConvVAE | 0.000500 | 0.013314 | 33.256 dB | 0.9185 | 32.035 dB | 0.9441 |
+| VQ-VAE | 0.007269 | 0.051884 | 21.585 dB | 0.5897 | 20.400 dB | 0.5294 |
+
+| Model | Background MSE | Background MAE | Background PSNR | Background SSIM |
+| --- | ---: | ---: | ---: | ---: |
+| ConvVAE | 0.000025 | 0.002058 | 46.237 dB | 0.8444 |
+| VQ-VAE | 0.000593 | 0.006254 | 32.735 dB | 0.7668 |
+
+The ConvVAE test MSE is about 14.5 times lower, PSNR is 11.67 dB higher,
+and SSIM is 0.329 higher than the VQ-VAE. The same conclusion holds within
+segmented anatomical foreground, so the result is not explained by padded
+background pixels. Test metrics are close to or slightly better than validation
+metrics for both models, with no evidence of a held-out-patient generalisation
+collapse.
+
+The VQ-VAE uses 13/512 codes on test (2.54% active) with perplexity 10.46,
+closely matching validation. Its representation is discrete and compact at the
+index level, but the chosen 512-entry codebook is heavily under-utilised and its
+reconstruction loss is substantial. Under this controlled budget, the ConvVAE
+is the recommended model for HipMRI reconstruction quality and stability.
+
+## Evaluation outputs
 
 - Reconstruction: MSE, MAE, PSNR, and SSIM on the fixed test split.
 - VQ-VAE representation: codebook perplexity, active-code fraction, and dead codes.
 - Resources: parameter count, training time, inference time, and peak accelerator memory.
-- Qualitative analysis: original/reconstruction/error-map panels for 3–5 representative lower-performing test cases.
-- Region-aware analysis using the supplied masks without training on the test labels.
-- Recommendation based on quality, stability, resource use, and observed failure modes.
+- Qualitative analysis: original/reconstruction/error-map panels for six lower-performing test cases per model.
+- Region-aware foreground/background analysis using masks only during evaluation.
+- Final recommendation based on quality, stability, resource use, and observed failure modes.
 
 ## Required files
 
@@ -178,7 +210,7 @@ to change the model after seeing validation outcomes.
 
 ## Immediate next steps
 
-1. Run the guarded one-time evaluation of both frozen checkpoints on test patients 040–042.
-2. Retrieve the CSV, JSON, visualisation, checkpoint, and Slurm evidence from Rangpur.
-3. Analyse whole-image and region-aware results without further model tuning.
-4. Record failure cases, resource statistics, and final engineering recommendations.
+1. Retrieve the CSV, JSON, visualisation, checkpoint, and Slurm evidence from Rangpur.
+2. Inspect per-patient metrics and the saved worst-case panels without further model tuning.
+3. Produce report figures, tables, limitations, and the final engineering recommendation.
+4. Preserve the source commit, checkpoint hashes, and AI-use evidence for submission.
