@@ -191,10 +191,32 @@ is the recommended model for HipMRI reconstruction quality and stability.
 
 - Reconstruction: MSE, MAE, PSNR, and SSIM on the fixed test split.
 - VQ-VAE representation: codebook perplexity, active-code fraction, and dead codes.
-- Resources: parameter count, training time, inference time, and peak accelerator memory.
+- Resources: parameter count, training time, one-time evaluation job time, and peak accelerator memory.
 - Qualitative analysis: original/reconstruction/error-map panels for six lower-performing test cases per model.
 - Region-aware foreground/background analysis using masks only during evaluation.
 - Final recommendation based on quality, stability, resource use, and observed failure modes.
+
+## Reproducible report assets
+
+After retrieving the frozen artifacts from Rangpur, generate the report figures and
+tables locally with:
+
+```bash
+conda activate 3710torch
+python make_report_assets.py --device cpu
+```
+
+The script first verifies both frozen checkpoint SHA-256 hashes. It then reads the
+saved histories, summaries, and per-slice CSV files to produce training curves,
+test-set comparison plots, codebook diagnostics, patient-level robustness results,
+and report-ready CSV tables under `report_assets/`. It does not train either model
+or recompute the frozen aggregate test metrics.
+
+For qualitative comparison, the script selects one median-error-nearest and one
+maximum-error VQ-VAE slice from each test patient, then renders both frozen models
+on those same six inputs. This creates a matched comparison rather than juxtaposing
+different model-specific worst cases. The selection rule, job ID, and checkpoint
+hashes are retained in `report_assets/provenance.json`.
 
 ## Required files
 
@@ -203,6 +225,7 @@ is the recommended model for HipMRI reconstruction quality and stability.
 - `metrics.py`: shared MSE, MAE, PSNR, and windowed SSIM implementation.
 - `train.py`: training, validation, best-checkpoint selection, configuration, and history logging.
 - `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
+- `make_report_assets.py`: frozen-result verification and reproducible report figures/tables.
 - `slurm/`: Rangpur sanity, baseline, and VQ-VAE batch scripts with automatic resume.
 - `slurm/evaluate_test.sh`: guarded one-time evaluation of both frozen checkpoints.
 - `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
@@ -210,7 +233,7 @@ is the recommended model for HipMRI reconstruction quality and stability.
 
 ## Immediate next steps
 
-1. Retrieve the CSV, JSON, visualisation, checkpoint, and Slurm evidence from Rangpur.
-2. Inspect per-patient metrics and the saved worst-case panels without further model tuning.
-3. Produce report figures, tables, limitations, and the final engineering recommendation.
-4. Preserve the source commit, checkpoint hashes, and AI-use evidence for submission.
+1. Draft the final report from the frozen tables, figures, and interpretation in `report_assets/`.
+2. Add the assignment-required AI-use disclosure and retain the development evidence.
+3. Verify the final document against the marking criteria and page/format limits.
+4. Preserve the source commit and checkpoint hashes with the final submission evidence.

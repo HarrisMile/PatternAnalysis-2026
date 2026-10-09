@@ -1,0 +1,7 @@
+selection,subject_id,week,slice_index,vqvae_mse
+Representative (subject median VQ-VAE MSE),040,3,9,0.006794907618314028
+Challenging (subject maximum VQ-VAE MSE),040,7,58,0.01212533749639988
+Representative (subject median VQ-VAE MSE),041,0,12,0.006073787808418274
+Challenging (subject maximum VQ-VAE MSE),041,0,58,0.010105914436280727
+Representative (subject median VQ-VAE MSE),042,0,47,0.00598214752972126
+Challenging (subject maximum VQ-VAE MSE),042,0,34,0.008046690374612808

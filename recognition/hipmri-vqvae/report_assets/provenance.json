@@ -1,0 +1,11 @@
+{
+  "checkpoint_sha256": {
+    "vae": "1da683f0d4afcf7704f236827380dde4f1999acfbff7f3256ddef75224ea63e1",
+    "vqvae": "5f1aa0c74259f4a7d3614ef9fba302c34d1cfcb96ac67052c5deec52325cf8a9"
+  },
+  "device_used_for_qualitative_rendering": "cpu",
+  "final_test_job": "644134",
+  "qualitative_samples": 6,
+  "qualitative_selection_rule": "For each test patient, choose the VQ-VAE median-MSE-nearest slice and maximum-MSE slice; render both frozen models on those identical inputs.",
+  "test_samples": 540
+}
