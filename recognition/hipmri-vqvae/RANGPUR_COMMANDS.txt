@@ -26,7 +26,9 @@ python -m pip install -r requirements.txt
 ## Confirm software, source data, and script syntax
 python -c "import nibabel, torch; print('PyTorch:', torch.__version__); print('nibabel:', nibabel.__version__)"
 test -d /home/groups/comp3710/HipMRI_Study_open/keras_slices_data && echo 'HipMRI data is ready'
-bash -n slurm/gpu_sanity.sh slurm/train_vae.sh slurm/train_vqvae.sh
+bash -n slurm/gpu_sanity.sh slurm/train_vae.sh slurm/train_vqvae.sh \
+  slurm/evaluate_test.sh slurm/benchmark_latency.sh
+python -m py_compile benchmark_latency.py
 
 ## Stage 5: Submit the short GPU sanity job on the verified comp3710 partition
 SANITY_JOB=$(sbatch --parsable slurm/gpu_sanity.sh)
@@ -78,3 +80,23 @@ tail -n 160 "hipmri_test_${TEST_JOB}.out"
 tail -n 120 "hipmri_test_${TEST_JOB}.err"
 cat predictions/formal-vae-test/summary.json
 cat predictions/formal-vqvae-test/summary.json
+
+## Stage 8: Benchmark the two frozen models on validation data only
+## This measures model-forward time; data loading, preprocessing, and transfer are excluded
+LATENCY_JOB=$(sbatch --parsable slurm/benchmark_latency.sh)
+LATENCY_JOB=${LATENCY_JOB%%;*}
+echo "$LATENCY_JOB"
+squeue -j "$LATENCY_JOB" -o '%.18i %.12P %.18j %.2t %.10M %R'
+
+## Inspect the completed benchmark and copy its concise evidence back to the local clone
+sacct -j "$LATENCY_JOB" --format=JobID,JobName,Partition,State,Elapsed,ExitCode,MaxRSS
+tail -n 160 "hipmri_latency_${LATENCY_JOB}.out"
+tail -n 120 "hipmri_latency_${LATENCY_JOB}.err"
+cat report_assets/inference_latency/summary.csv
+cat report_assets/inference_latency/summary.json
+
+## After inspection, exit Rangpur and run this from the local Mac terminal
+cd /Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026
+rsync -ah --partial \
+  s4984233@rangpur.compute.eait.uq.edu.au:/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/report_assets/inference_latency/ \
+  recognition/hipmri-vqvae/report_assets/inference_latency/
