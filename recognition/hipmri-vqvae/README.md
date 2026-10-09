@@ -8,20 +8,140 @@ Stage 5 completed experiment. The patient-disjoint data pipeline, both 40-epoch 
 
 Under the same patient-level data split, preprocessing, training budget, and evaluation protocol, does a VQ-VAE provide a better reconstruction-quality and representation-efficiency trade-off than a continuous-latent convolutional VAE on 2D HipMRI slices?
 
-## Models
+## Engineering dilemma and scope
+
+The course project frames VQ-VAE as a hard-difficulty generative model for 2D
+HipMRI. The engineering question is not whether a discrete latent space is novel,
+but whether its operational benefit justifies the additional quantisation failure
+modes. A useful prototype should reconstruct plausible anatomy, remain stable to
+train, avoid patient leakage and memorisation, and provide a compact representation
+without sacrificing clinically relevant boundaries.
+
+This implementation evaluates the reconstruction and representation-learning stage
+of that problem. It does **not** train an autoregressive prior over code indices, so it
+does not claim unconditional generation of new patient cohorts. The comparison is
+therefore deliberately scoped to fidelity, codebook utilisation, computational cost,
+and failure behaviour under identical inputs. This boundary is important: a strong
+reconstruction result is necessary for a useful VQ-VAE generator, but is not by itself
+evidence that independently sampled images would be diverse, non-memorised, or safe
+for downstream clinical training.
+
+## Feasibility review
+
+### User need, scope, and acceptance criteria
+
+The intended user is an imaging research engineer deciding whether a discrete VQ-VAE
+representation is worth advancing beyond a continuous-latent autoencoding baseline.
+Before formal training, the prototype was considered feasible if it could:
+
+1. build deterministic MRI/mask pairs with zero patient overlap between splits;
+2. train and reload both a continuous baseline and hard-difficulty VQ-VAE end to end;
+3. produce anatomically recognisable reconstructions while reporting SSIM against the
+   course target of approximately 0.6 rather than hiding a miss;
+4. fit comfortably on one course A100 GPU and finish each formal run within a
+   one-GPU-hour budget; and
+5. preserve reproducible configs, histories, checkpoints, metrics, and visual failure
+   evidence without committing restricted data or model files to Git.
+
+### Model choice and course concepts
+
+Both models use the course concepts of convolutional feature extraction,
+encoder-decoder representation learning, regularisation, held-out validation, and
+quantitative reconstruction metrics. The ConvVAE is the implemented baseline because
+it provides a continuous spatial latent representation with a probabilistic KL prior.
+The VQ-VAE is the hard-difficulty model: it replaces continuous sampling with
+nearest-neighbour vector quantisation, a learned discrete codebook, commitment loss,
+and a straight-through gradient estimator. Using the same input, encoder depth,
+latent width, decoder, optimiser, and training budget isolates the main variable of
+interest: continuous versus discrete latent representation.
+
+### Preliminary feasibility evidence
+
+The initial data audit found 12,660 valid MRI/mask pairs and verified patient-disjoint
+official splits. Software smoke tests confirmed `[N, 1, 256, 144]` tensors and matching
+model outputs. A first limited A100 run completed the full pipeline but exposed total
+VQ codebook collapse at 1/512 active entries. A revised validation-only sanity run,
+using deterministic farthest-point codebook initialisation and pre-quantisation batch
+normalisation, increased validation utilisation to 27 active entries after five
+limited epochs and completed both models in 46 seconds. This justified proceeding to
+the fixed formal budget while retaining codebook collapse as a primary risk.
+
+### Risks, compute budget, and fallback
+
+The main technical risks were patient leakage, VQ codebook collapse, loss of fine
+anatomical texture, padded background inflating whole-image metrics, and interrupted
+cluster jobs. The planned budget was one A100 GPU, 40 epochs per model, and validation-
+only model selection. Mitigations included subject-level split assertions, foreground
+and background metrics, active-code/perplexity tracking, resumable checkpoints, and a
+guarded one-time test script. The fallback was the working ConvVAE baseline: if the
+VQ-VAE failed its fidelity or utilisation criteria, the negative result would be
+reported and the baseline recommended rather than tuning after test exposure.
+
+## Methodology
+
+### Controlled model comparison
 
 - **Baseline:** convolutional VAE with a continuous spatial latent tensor.
 - **Hard model:** VQ-VAE with a learned discrete codebook and straight-through estimator.
 
-The encoder and decoder capacity are intentionally similar so that the comparison focuses on continuous versus vector-quantised latent representations.
-The VQ codebook is initialised once from diverse encoder vectors in the first
-training batch using deterministic farthest-point sampling. This avoids the
-single-code collapse observed with the original narrow random initialisation;
-after that first batch, the embeddings are learned by the standard codebook and
-commitment losses. Batch normalisation before quantisation keeps encoder scales
-stable while the codebook and encoder co-adapt.
+Both networks receive one normalised `256 x 144` MRI slice and reconstruct one slice
+of the same shape. The shared encoder contains three `4 x 4`, stride-2 convolutions
+with channel widths 32, 64, and 128, each followed by ReLU. It maps the input to a
+`128 x 32 x 18` feature tensor. The shared decoder uses three mirrored transposed
+convolutions followed by a `3 x 3` output convolution and sigmoid, returning
+intensities in `[0, 1]`.
 
-## Verified dataset inventory
+| Stage | ConvVAE baseline | VQ-VAE hard model |
+| --- | --- | --- |
+| Encoder | Shared 3-stage convolutional encoder | Shared 3-stage convolutional encoder |
+| Latent mapping | Separate `1 x 1` heads for `mu` and `logvar` | `1 x 1` projection plus batch normalisation |
+| Latent representation | Continuous `64 x 32 x 18` tensor | `32 x 18` grid of 64-D code vectors |
+| Discrete capacity | Not applicable | 512 learned codebook entries |
+| Decoder | Shared-capacity 3-stage decoder | Shared-capacity 3-stage decoder |
+| Trainable parameters | 476,513 | 501,153 |
+
+### Continuous ConvVAE baseline
+
+The ConvVAE predicts a mean `mu` and log variance `logvar` at every spatial latent
+location. During training it applies the reparameterisation trick,
+`z = mu + exp(0.5 * logvar) * epsilon`, with standard-normal `epsilon`. During
+validation and inference it decodes `mu` directly, making evaluation deterministic.
+Its objective is
+
+`L_VAE = MSE(x_hat, x) + beta * KL(q(z|x) || N(0, I))`,
+
+where `beta = 1e-4`. The small KL weight preserves a probabilistic latent prior while
+prioritising the image fidelity required by this reconstruction task.
+
+### Hard VQ-VAE model
+
+The VQ-VAE projects encoder features to 64 channels and batch-normalises them before
+quantisation. Each 64-D vector is replaced by its nearest codebook entry under squared
+Euclidean distance. The straight-through estimator passes decoder gradients to the
+encoder while the codebook and encoder are trained with separate stop-gradient terms:
+
+`L_VQ = MSE(x_hat, x) + ||sg[z_e] - e||^2 + 0.25 * ||z_e - sg[e]||^2`.
+
+Here `z_e` is the encoder output, `e` is the selected code vector, and `sg` denotes
+stop-gradient. The first training batch initialises all 512 entries using deterministic
+farthest-point sampling over encoder vectors. This is performed once; subsequent
+batches learn the embeddings through the codebook and commitment losses. The change
+was introduced after the initial validation-only sanity run exposed single-code
+collapse. Batch normalisation keeps encoder scale stable while the codebook and encoder
+co-adapt.
+
+### Codebook diagnostics
+
+Codebook health is measured over all latent assignments in a split. An entry is active
+if it receives at least one assignment. If `p_k` is the observed assignment frequency
+of code `k`, perplexity is `exp(-sum_k p_k log(p_k))`. Active count reveals dead
+capacity, while perplexity distinguishes nominal use from balanced use. These
+diagnostics are necessary because a VQ-VAE can report a finite reconstruction loss
+while silently mapping nearly every input to only a few codes.
+
+## Experimental setup
+
+### Dataset and leakage-safe split
 
 The source data are the course-provided HipMRI 2D NIfTI slices. Raw data are local-only and ignored by Git.
 
@@ -31,9 +151,9 @@ The source data are the course-provided HipMRI 2D NIfTI slices. Raw data are loc
 | Validation | 660 | 660 | 036–039 |
 | Test | 540 | 540 | 040–042 |
 
-The filename key `(patient, week, slice)` pairs every MRI with exactly one segmentation mask. The patient sets are disjoint across all three splits. Of the 12,660 MRI slices, 12,600 have shape `256 x 128`; the 60 slices from patient 019 have shape `256 x 144`. MRI values are non-negative `float32`; masks are `uint8` labels with observed values 0–5.
+The filename key `(patient, week, slice)` pairs every MRI with exactly one segmentation mask. The patient sets are disjoint across all three splits. Of the 12,660 MRI slices, 12,600 have shape `256 x 128`; the 60 slices from patient 019 have shape `256 x 144`. MRI values are non-negative `float32`; masks are `uint8` labels with observed values 0–5. The course-provided split membership was retained, but programmatic assertions prevent a patient from appearing in more than one split.
 
-## Deterministic preprocessing
+### Deterministic preprocessing
 
 `dataset.py` implements the following fixed pipeline:
 
@@ -46,6 +166,68 @@ The filename key `(patient, week, slice)` pairs every MRI with exactly one segme
 7. Preserve the integer segmentation mask for later region-aware evaluation.
 
 The per-slice normalisation is deterministic and does not use labels or statistics from other patients. Its trade-off is that absolute scanner-intensity differences between slices are removed; this limitation must be considered when interpreting results.
+
+No stochastic data augmentation was used. This keeps both models on exactly the same
+observations and avoids anatomically questionable transformations, but it also limits
+the invariance learned from the relatively small patient cohort.
+
+### Formal training configuration
+
+| Setting | ConvVAE | VQ-VAE |
+| --- | ---: | ---: |
+| Epochs | 40 | 40 |
+| Batch size | 64 | 64 |
+| Optimiser | Adam | Adam |
+| Learning rate | `2e-4` | `2e-4` |
+| Random seed | 3710 | 3710 |
+| Data workers | 4 | 4 |
+| VAE KL weight | `1e-4` | Not applicable |
+| VQ commitment weight | Not applicable | 0.25 |
+| Codebook size / dimension | Not applicable | 512 / 64 |
+| Device | NVIDIA A100-PCIE-40GB | NVIDIA A100-PCIE-40GB |
+| Python / PyTorch | 3.11.16 / 2.14.0+cu130 | 3.11.16 / 2.14.0+cu130 |
+
+The models were trained independently with identical data order rules and budget.
+Python, NumPy, and PyTorch RNGs were seeded; deterministic PyTorch algorithms were
+requested with warnings enabled. A newly seeded data-loader generator uses
+`seed + epoch` for training shuffle, while validation order is fixed. Adam uses the
+PyTorch default beta and epsilon values because they were not overridden.
+
+### Model selection and frozen test protocol
+
+Validation runs after every epoch. `best.pt` is selected by the lowest complete
+validation objective, while `last.pt` supports interruption recovery. Resume restores
+model state, optimiser state, epoch history, CPU RNG state, and CUDA RNG states. A
+controlled interrupted-versus-continuous test produced identical histories and final
+weights.
+
+The test split was not used for checkpoint selection. After both formal runs and the
+comparison protocol were frozen, guarded Slurm job `644134` evaluated the two selected
+checkpoints once. Their SHA-256 hashes are reported with the final results. No model
+changes or hyperparameter decisions were made after viewing test performance.
+
+### Evaluation metrics
+
+Metrics are computed independently for every slice and then averaged, so each slice is
+one evaluation unit:
+
+- **MSE:** mean squared pixel error; lower is better.
+- **MAE:** mean absolute pixel error; lower is better.
+- **PSNR:** `10 log10(1 / MSE)` for data scaled to `[0, 1]`; higher is better.
+- **SSIM:** local-window structural similarity using an `11 x 11` Gaussian window with
+  `sigma = 1.5`; higher is better.
+- **Region-aware metrics:** the same four measures computed separately over nonzero
+  anatomical mask pixels and label-0 background pixels.
+- **VQ diagnostics:** active entries, dead entries, active fraction, and assignment
+  perplexity.
+
+The segmentation mask is never supplied to either model. It is used only after
+reconstruction to test whether whole-image results are inflated by zero padding or
+easy background. Trainable parameter count is computed directly from model parameters;
+training time is the sum of measured epoch durations; peak accelerator memory is
+PyTorch's maximum allocated CUDA memory. The guarded two-model test job took 22 seconds
+end to end, but this is not a clean per-model latency measurement; independent inference
+latency remains a documentation item to measure before final submission.
 
 ## Environment and manifest
 
