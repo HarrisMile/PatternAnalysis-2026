@@ -33,14 +33,14 @@ def _gaussian_window(
     return window_2d.expand(channels, 1, window_size, window_size).contiguous()
 
 
-def structural_similarity(
+def _structural_similarity_map(
     targets: Tensor,
     predictions: Tensor,
     data_range: float = 1.0,
     window_size: int = 11,
     sigma: float = 1.5,
 ) -> Tensor:
-    """Return standard local-window SSIM for each image in a batch."""
+    """Return the local-window SSIM map for inputs scaled to [0, 1]."""
     _validate_images(targets, predictions)
     if window_size % 2 == 0 or window_size < 3:
         raise ValueError("window_size must be an odd integer of at least 3.")
@@ -82,8 +82,27 @@ def structural_similarity(
         (mu_target_squared + mu_prediction_squared + constant_1)
         * (variance_target + variance_prediction + constant_2)
     )
-    score_map = numerator / denominator.clamp_min(torch.finfo(targets.dtype).eps)
-    return score_map.mean(dim=(1, 2, 3)).clamp(-1.0, 1.0)
+    return (numerator / denominator.clamp_min(torch.finfo(targets.dtype).eps)).clamp(
+        -1.0, 1.0
+    )
+
+
+def structural_similarity(
+    targets: Tensor,
+    predictions: Tensor,
+    data_range: float = 1.0,
+    window_size: int = 11,
+    sigma: float = 1.5,
+) -> Tensor:
+    """Return standard local-window SSIM for each image in a batch."""
+    score_map = _structural_similarity_map(
+        targets,
+        predictions,
+        data_range=data_range,
+        window_size=window_size,
+        sigma=sigma,
+    )
+    return score_map.mean(dim=(1, 2, 3))
 
 
 def reconstruction_metrics(targets: Tensor, predictions: Tensor) -> Dict[str, Tensor]:
@@ -95,3 +114,47 @@ def reconstruction_metrics(targets: Tensor, predictions: Tensor) -> Dict[str, Te
     psnr = 10.0 * torch.log10(1.0 / mse.clamp_min(1e-12))
     ssim = structural_similarity(targets, predictions)
     return {"mse": mse, "mae": mae, "psnr": psnr, "ssim": ssim}
+
+
+def region_reconstruction_metrics(
+    targets: Tensor,
+    predictions: Tensor,
+    masks: Tensor,
+) -> Dict[str, Tensor]:
+    """Return foreground/background metrics using nonzero mask labels as foreground."""
+    _validate_images(targets, predictions)
+    if masks.ndim == 3:
+        masks = masks.unsqueeze(1)
+    if masks.ndim != 4 or masks.shape[0] != targets.shape[0]:
+        raise ValueError(
+            "Masks must have shape [N, H, W] or [N, 1, H, W] with the same batch size."
+        )
+    if masks.shape[1] != 1 or masks.shape[-2:] != targets.shape[-2:]:
+        raise ValueError(f"Mask shape {masks.shape} is incompatible with images {targets.shape}.")
+
+    errors = predictions - targets
+    squared_errors = errors.square()
+    absolute_errors = errors.abs()
+    ssim_map = _structural_similarity_map(targets, predictions)
+    results: Dict[str, Tensor] = {}
+
+    foreground = masks > 0
+    for region_name, region in (("foreground", foreground), ("background", ~foreground)):
+        weights = region.expand(-1, targets.shape[1], -1, -1).to(targets.dtype)
+        counts = weights.sum(dim=(1, 2, 3))
+        valid = counts > 0
+        safe_counts = counts.clamp_min(1.0)
+        mse = (squared_errors * weights).sum(dim=(1, 2, 3)) / safe_counts
+        mae = (absolute_errors * weights).sum(dim=(1, 2, 3)) / safe_counts
+        psnr = 10.0 * torch.log10(1.0 / mse.clamp_min(1e-12))
+        ssim = (ssim_map * weights).sum(dim=(1, 2, 3)) / safe_counts
+        invalid = torch.full_like(mse, float("nan"))
+        results.update(
+            {
+                f"{region_name}_mse": torch.where(valid, mse, invalid),
+                f"{region_name}_mae": torch.where(valid, mae, invalid),
+                f"{region_name}_psnr": torch.where(valid, psnr, invalid),
+                f"{region_name}_ssim": torch.where(valid, ssim, invalid),
+            }
+        )
+    return results

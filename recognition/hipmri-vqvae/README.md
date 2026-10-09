@@ -104,6 +104,12 @@ python predict.py \
 
 The command saves per-sample MSE, MAE, PSNR, and windowed SSIM to `metrics.csv`, aggregated values to `summary.json`, and a panel of the highest-MSE cases to `worst_reconstructions.png`. VQ-VAE evaluations additionally report codebook perplexity, active codes, dead codes, and active-code fraction. The untouched test split should be evaluated only after both final models and the comparison protocol have been frozen.
 
+Region-aware evaluation treats every nonzero segmentation label as anatomical
+foreground and label 0 as background. MSE, MAE, PSNR, and local-window SSIM are
+computed separately in both regions for each slice, then averaged across valid
+slices. This exposes whether whole-image scores are inflated by padded or
+background pixels. The masks are used only for evaluation, never as model input.
+
 ## Rangpur execution
 
 The Rangpur workflow reuses the `comp3710lab2` Conda environment and the course account/partition pattern that was verified in earlier COMP3710 work. A live check on 8 October 2026 confirmed that the `comp3710` partition is available with A100 GPUs, the user account is associated with the `comp3710` Slurm account under normal QOS, and the existing environment contains CUDA-enabled PyTorch 2.14.0. `nibabel` was the only required package missing before installing this project's requirements. Because cluster configuration can change, run `sinfo` before every new submission and compare it with the current [EAIT Compute documentation](https://student.eait.uq.edu.au/infrastructure/compute/).
@@ -132,6 +138,23 @@ An intentionally limited CPU run also verified the full artifact pipeline. The C
 
 The revised A100 sanity job `642126` completed successfully in 46 seconds with exit code `0:0`, an empty error log, and peak host memory of about 1.74 GiB. Across five deliberately limited VQ-VAE epochs, validation active-code count changed from 7 to 16, 25, 29, and 27; validation perplexity increased from 1.66 to 7.78; PSNR increased from 10.72 to 17.64 dB; and SSIM increased from 0.1257 to 0.2977. This confirms that the single-code collapse was removed, although the remaining sparse utilisation must still be monitored during formal training. All sanity results are diagnostic only and must not be presented as final model-quality evidence.
 
+## Frozen validation results
+
+Both models completed the same 40-epoch, batch-size-64 budget on an A100 GPU.
+Checkpoint selection used validation objective only; the test patients were not
+accessed. The frozen VAE checkpoint is epoch 40 and the frozen VQ-VAE checkpoint
+is epoch 38.
+
+| Model | Parameters | Training time | Peak GPU memory | MSE | MAE | PSNR | SSIM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ConvVAE | 476,513 | 1,888.9 s | 1,348.9 MiB | 0.000569 | 0.014757 | 32.698 dB | 0.9178 |
+| VQ-VAE | 501,153 | 1,923.7 s | 1,348.9 MiB | 0.007637 | 0.055121 | 21.312 dB | 0.5579 |
+
+The frozen VQ-VAE uses 14/512 entries on validation (2.73% active) with
+perplexity 10.30. It therefore avoids total collapse but learns a highly sparse
+discrete representation. This is a substantive negative result, not a reason
+to change the model after seeing validation outcomes.
+
 ## Planned evaluation
 
 - Reconstruction: MSE, MAE, PSNR, and SSIM on the fixed test split.
@@ -149,13 +172,13 @@ The revised A100 sanity job `642126` completed successfully in 46 seconds with e
 - `train.py`: training, validation, best-checkpoint selection, configuration, and history logging.
 - `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
 - `slurm/`: Rangpur sanity, baseline, and VQ-VAE batch scripts with automatic resume.
+- `slurm/evaluate_test.sh`: guarded one-time evaluation of both frozen checkpoints.
 - `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 - `README.md`: experiment protocol, commands, evidence, and findings.
 
 ## Immediate next steps
 
-1. Train the ConvVAE baseline for the frozen 40-epoch, batch-size-64 budget.
-2. Train the VQ-VAE with the same data, hardware, optimiser, and epoch/batch budget while monitoring codebook use.
-3. Compare both validation histories and freeze one checkpoint per model without accessing test data.
-4. Evaluate both frozen checkpoints once on the untouched test patients.
-5. Record failure cases, resource statistics, and final engineering recommendations.
+1. Run the guarded one-time evaluation of both frozen checkpoints on test patients 040–042.
+2. Retrieve the CSV, JSON, visualisation, checkpoint, and Slurm evidence from Rangpur.
+3. Analyse whole-image and region-aware results without further model tuning.
+4. Record failure cases, resource statistics, and final engineering recommendations.

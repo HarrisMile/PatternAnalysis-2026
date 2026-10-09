@@ -65,3 +65,16 @@ tail -n 120 "hipmri_vqvae_${VQVAE_JOB}.err"
 ## The scripts automatically resume from last.pt if a requeued job restarts
 ## Re-run sinfo before future submissions because cluster partitions can change
 ## Do not evaluate the test split until both final configurations are frozen
+
+## Stage 7: Run exactly once after both validation-selected checkpoints are frozen
+TEST_JOB=$(sbatch --parsable slurm/evaluate_test.sh)
+TEST_JOB=${TEST_JOB%%;*}
+echo "$TEST_JOB"
+squeue -j "$TEST_JOB" -o '%.18i %.12P %.18j %.2t %.10M %R'
+
+## Inspect the one-time test job and retain its checkpoint hashes
+sacct -j "$TEST_JOB" --format=JobID,JobName,Partition,State,Elapsed,ExitCode,MaxRSS
+tail -n 160 "hipmri_test_${TEST_JOB}.out"
+tail -n 120 "hipmri_test_${TEST_JOB}.err"
+cat predictions/formal-vae-test/summary.json
+cat predictions/formal-vqvae-test/summary.json

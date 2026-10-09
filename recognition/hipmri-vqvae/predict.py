@@ -19,8 +19,24 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from dataset import HipMRISliceDataset
-from metrics import reconstruction_metrics
+from metrics import reconstruction_metrics, region_reconstruction_metrics
 from train import build_model, positive_int, select_device
+
+
+METRIC_NAMES = (
+    "mse",
+    "mae",
+    "psnr",
+    "ssim",
+    "foreground_mse",
+    "foreground_mae",
+    "foreground_psnr",
+    "foreground_ssim",
+    "background_mse",
+    "background_mae",
+    "background_psnr",
+    "background_ssim",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,11 +55,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _mean_metrics(rows: list[Dict[str, Any]]) -> Dict[str, float]:
-    return {
-        name: float(np.mean([float(row[name]) for row in rows]))
-        for name in ("mse", "mae", "psnr", "ssim")
-    }
+def _mean_metrics(rows: list[Dict[str, Any]]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for name in METRIC_NAMES:
+        values = np.asarray([float(row[name]) for row in rows], dtype=np.float64)
+        finite = np.isfinite(values)
+        summary[name] = float(values[finite].mean()) if finite.any() else None
+        if name.startswith(("foreground_", "background_")):
+            summary[f"{name}_valid_samples"] = int(finite.sum())
+    return summary
 
 
 def _codebook_statistics(code_counts: Optional[Tensor]) -> Dict[str, float]:
@@ -70,10 +90,7 @@ def _write_metrics(path: Path, rows: list[Dict[str, Any]]) -> None:
         "slice_index",
         "image_path",
         "mask_path",
-        "mse",
-        "mae",
-        "psnr",
-        "ssim",
+        *METRIC_NAMES,
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -160,9 +177,11 @@ def main() -> None:
             if args.max_batches is not None and batch_index >= args.max_batches:
                 break
             images = batch["image"].to(device, non_blocking=device.type == "cuda")
+            masks = batch["mask"].to(device, non_blocking=device.type == "cuda")
             outputs = model(images)
             reconstructions = outputs["reconstruction"]
             batch_metrics = reconstruction_metrics(images, reconstructions)
+            batch_metrics.update(region_reconstruction_metrics(images, reconstructions, masks))
 
             if model_name == "vqvae":
                 indices = outputs["encoding_indices"].reshape(-1)
@@ -176,17 +195,19 @@ def main() -> None:
             metric_values = {name: values.cpu().numpy() for name, values in batch_metrics.items()}
 
             for item_index in range(images.shape[0]):
-                row = {
+                row: Dict[str, Any] = {
                     "subject_id": batch["subject_id"][item_index],
                     "week": int(batch["week"][item_index]),
                     "slice_index": int(batch["slice_index"][item_index]),
                     "image_path": batch["image_path"][item_index],
                     "mask_path": batch["mask_path"][item_index],
-                    "mse": float(metric_values["mse"][item_index]),
-                    "mae": float(metric_values["mae"][item_index]),
-                    "psnr": float(metric_values["psnr"][item_index]),
-                    "ssim": float(metric_values["ssim"][item_index]),
                 }
+                row.update(
+                    {
+                        name: float(metric_values[name][item_index])
+                        for name in METRIC_NAMES
+                    }
+                )
                 metrics_rows.append(row)
                 sample = {
                     **row,
