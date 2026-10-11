@@ -2,7 +2,10 @@
 
 ## Project status
 
-Stage 5 completed experiment. The patient-disjoint data pipeline, both 40-epoch model runs, validation-only checkpoint selection, and guarded one-time test evaluation have completed successfully on A100 GPUs. The final metrics below are now frozen; no post-test model tuning or retraining is permitted.
+Stage 5 completed experiment. The patient-disjoint data pipeline, both 40-epoch model
+runs, validation-only checkpoint selection, guarded one-time test evaluation, and
+frozen-model inference benchmark have completed successfully on A100 GPUs. The final
+metrics below are now frozen; no post-test model tuning or retraining is permitted.
 
 ## Research question
 
@@ -226,8 +229,33 @@ reconstruction to test whether whole-image results are inflated by zero padding 
 easy background. Trainable parameter count is computed directly from model parameters;
 training time is the sum of measured epoch durations; peak accelerator memory is
 PyTorch's maximum allocated CUDA memory. The guarded two-model test job took 22 seconds
-end to end, but this is not a clean per-model latency measurement; independent inference
-latency remains a documentation item to measure before final submission.
+end to end, but that total includes setup, data loading, metric calculation, and output
+writing, so it is not used as per-model inference latency.
+
+### Frozen inference-latency protocol
+
+After model selection and test evaluation were frozen, Slurm job `644793` benchmarked
+both unchanged checkpoints on an NVIDIA A100-PCIE-40GB. It used the complete 660-slice
+validation split in fixed order, batch size 64, 11 batches per repetition, 10 warm-up
+batches, and 20 timed repetitions. The preprocessed tensors were placed on the GPU
+before timing, and CUDA was synchronised around each complete repetition. Therefore,
+the reported value is amortised model-forward time per slice at batch size 64; it is
+not single-request latency and excludes disk I/O, NIfTI loading, preprocessing, and
+host-to-device transfer.
+
+| Model | Median ms/slice | Q1-Q3 ms/slice | Median slices/s | Benchmark peak CUDA allocation |
+| --- | ---: | ---: | ---: | ---: |
+| ConvVAE | 0.1291 | 0.1290-0.1295 | 7,744.4 | 994.9 MiB |
+| VQ-VAE | 0.1441 | 0.1438-0.1444 | 6,940.9 | 995.5 MiB |
+
+Under this fixed batched protocol, the VQ-VAE is 11.6% slower per slice and provides
+10.4% lower throughput than the ConvVAE. The narrow interquartile ranges show stable
+repeated timing. Peak allocations are almost identical, although these benchmark
+values include the validation tensors deliberately preloaded on the GPU and should not
+be interpreted as single-request deployment memory. The timing result was used only
+for resource comparison; it did not change either model or any selection decision.
+The benchmark source commit was `b8f0ee2`, and the checkpoint hashes match those used
+for the one-time test evaluation.
 
 ## Environment and manifest
 
@@ -296,13 +324,19 @@ background pixels. The masks are used only for evaluation, never as model input.
 
 The Rangpur workflow reuses the `comp3710lab2` Conda environment and the course account/partition pattern that was verified in earlier COMP3710 work. A live check on 8 October 2026 confirmed that the `comp3710` partition is available with A100 GPUs, the user account is associated with the `comp3710` Slurm account under normal QOS, and the existing environment contains CUDA-enabled PyTorch 2.14.0. `nibabel` was the only required package missing before installing this project's requirements. Because cluster configuration can change, run `sinfo` before every new submission and compare it with the current [EAIT Compute documentation](https://student.eait.uq.edu.au/infrastructure/compute/).
 
-The complete login, setup, submission, monitoring, and log-inspection sequence is in `RANGPUR_COMMANDS.txt`. Three Slurm scripts are provided:
+The complete login, setup, submission, monitoring, and log-inspection sequence is in
+`RANGPUR_COMMANDS.txt`. Five Slurm scripts are provided:
 
 - `slurm/gpu_sanity.sh`: short validation-only ConvVAE and VQ-VAE GPU pipeline check;
 - `slurm/train_vae.sh`: formal ConvVAE baseline training and validation evaluation;
-- `slurm/train_vqvae.sh`: formal VQ-VAE training and validation evaluation under the same defaults.
+- `slurm/train_vqvae.sh`: formal VQ-VAE training and validation evaluation under the same defaults;
+- `slurm/evaluate_test.sh`: guarded one-time test evaluation of both frozen checkpoints; and
+- `slurm/benchmark_latency.sh`: validation-only A100 timing of both frozen checkpoints.
 
-Formal jobs default to 40 epochs, batch size 64, learning rate `2e-4`, seed 3710, four data workers, and one GPU. These values remain provisional until the short GPU run confirms runtime, memory use, and codebook behaviour. They can be overridden through exported Slurm environment variables without editing the scripts.
+The reported formal jobs used 40 epochs, batch size 64, learning rate `2e-4`, seed
+3710, four data workers, and one GPU. The training scripts retain environment-variable
+overrides for future reproducibility checks, but the frozen results use these stated
+values.
 
 Every epoch writes `last.pt`; the best validation checkpoint remains in `best.pt`. If Slurm requeues a job, the scripts detect `last.pt` and pass `--resume`. The trainer restores the model, optimiser, epoch history, and PyTorch random state. A local interrupted-versus-continuous test produced identical metric histories and exactly equal final model weights.
 
@@ -373,7 +407,8 @@ is the recommended model for HipMRI reconstruction quality and stability.
 
 - Reconstruction: MSE, MAE, PSNR, and SSIM on the fixed test split.
 - VQ-VAE representation: codebook perplexity, active-code fraction, and dead codes.
-- Resources: parameter count, training time, one-time evaluation job time, and peak accelerator memory.
+- Resources: parameter count, training time, peak accelerator memory, and independent
+  frozen-model inference latency/throughput.
 - Qualitative analysis: original/reconstruction/error-map panels for six lower-performing test cases per model.
 - Region-aware foreground/background analysis using masks only during evaluation.
 - Final recommendation based on quality, stability, resource use, and observed failure modes.
@@ -400,6 +435,12 @@ on those same six inputs. This creates a matched comparison rather than juxtapos
 different model-specific worst cases. The selection rule, job ID, and checkpoint
 hashes are retained in `report_assets/provenance.json`.
 
+The independent A100 timing evidence is stored in
+`report_assets/inference_latency/summary.json` and `summary.csv`. The JSON retains all
+20 repetition measurements, protocol boundaries, software/device versions, sample
+identity, source commit, and checkpoint hashes; the CSV provides the two concise rows
+used in the report.
+
 ## Required files
 
 - `modules.py`: ConvVAE, vector quantiser, VQ-VAE, and loss functions.
@@ -407,9 +448,11 @@ hashes are retained in `report_assets/provenance.json`.
 - `metrics.py`: shared MSE, MAE, PSNR, and windowed SSIM implementation.
 - `train.py`: training, validation, best-checkpoint selection, configuration, and history logging.
 - `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
+- `benchmark_latency.py`: frozen-checkpoint validation benchmark and CSV/JSON evidence generation.
 - `make_report_assets.py`: frozen-result verification and reproducible report figures/tables.
 - `slurm/`: Rangpur sanity, baseline, and VQ-VAE batch scripts with automatic resume.
 - `slurm/evaluate_test.sh`: guarded one-time evaluation of both frozen checkpoints.
+- `slurm/benchmark_latency.sh`: fixed A100 latency benchmark for both frozen checkpoints.
 - `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 - `README.md`: experiment protocol, commands, evidence, and findings.
 
