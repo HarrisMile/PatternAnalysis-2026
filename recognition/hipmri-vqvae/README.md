@@ -105,8 +105,10 @@ intensities in `[0, 1]`.
 
 ### Continuous ConvVAE baseline
 
-The ConvVAE predicts a mean `mu` and log variance `logvar` at every spatial latent
-location. During training it applies the reparameterisation trick,
+Following the variational autoencoder formulation of
+[Kingma and Welling (2014)](https://arxiv.org/abs/1312.6114), the ConvVAE predicts a
+mean `mu` and log variance `logvar` at every spatial latent location. During training
+it applies the reparameterisation trick,
 `z = mu + exp(0.5 * logvar) * epsilon`, with standard-normal `epsilon`. During
 validation and inference it decodes `mu` directly, making evaluation deterministic.
 Its objective is
@@ -118,7 +120,9 @@ prioritising the image fidelity required by this reconstruction task.
 
 ### Hard VQ-VAE model
 
-The VQ-VAE projects encoder features to 64 channels and batch-normalises them before
+Following the discrete-latent method of
+[van den Oord, Vinyals, and Kavukcuoglu (2017)](https://proceedings.neurips.cc/paper/2017/hash/7a98af17e63a0ac09ce2e96d03992fbc-Abstract.html),
+the VQ-VAE projects encoder features to 64 channels and batch-normalises them before
 quantisation. Each 64-D vector is replaced by its nearest codebook entry under squared
 Euclidean distance. The straight-through estimator passes decoder gradients to the
 encoder while the codebook and encoder are trained with separate stop-gradient terms:
@@ -217,8 +221,9 @@ one evaluation unit:
 - **MSE:** mean squared pixel error; lower is better.
 - **MAE:** mean absolute pixel error; lower is better.
 - **PSNR:** `10 log10(1 / MSE)` for data scaled to `[0, 1]`; higher is better.
-- **SSIM:** local-window structural similarity using an `11 x 11` Gaussian window with
-  `sigma = 1.5`; higher is better.
+- **SSIM:** local-window structural similarity from
+  [Wang et al. (2004)](https://ieeexplore.ieee.org/abstract/document/1284395/), using
+  an `11 x 11` Gaussian window with `sigma = 1.5`; higher is better.
 - **Region-aware metrics:** the same four measures computed separately over nonzero
   anatomical mask pixels and label-0 background pixels.
 - **VQ diagnostics:** active entries, dead entries, active fraction, and assignment
@@ -534,6 +539,58 @@ also contain an isolated unusual-appearance component, but no clinical or causal
 is made. The masks were used only to contextualise error locations, not as model input
 or evidence that a reconstruction is medically acceptable.
 
+## Limitations and threats to validity
+
+- **Small and imbalanced held-out cohort:** the test split has only three patients,
+  and patient 040 contributes 420/540 slices. Patient-level results reduce the risk of
+  a slice-weighted conclusion being driven by that patient, but three patients are too
+  few for a reliable population-level confidence interval or clinical generalisation.
+  Slices from the same patient are correlated and must not be treated as 540 independent
+  patient observations.
+- **One fixed experimental configuration:** the comparison uses one official split,
+  one random seed, one architecture scale, and one 40-epoch budget. This is a controlled
+  engineering comparison, not proof that ConvVAEs always outperform VQ-VAEs. No data
+  augmentation, multi-seed study, cross-validation, or architecture ablation was run.
+- **Two-dimensional and intensity-normalised input:** each slice is reconstructed
+  independently, so through-plane anatomical context is absent. Per-slice percentile
+  normalisation improves numerical consistency but removes absolute scanner-intensity
+  differences. Zero padding also changes the whole-image pixel distribution, although
+  foreground metrics were added to check that background did not determine the result.
+- **Incomplete generative scope:** no learned autoregressive prior over VQ indices was
+  trained. The experiment evaluates reconstruction and representation learning only;
+  it cannot support claims about unconditional sample quality, cohort diversity, or
+  memorisation. The VQ-VAE also remains below the approximate 0.6 SSIM target on both
+  validation (0.5579) and test (0.5897), with only 13/512 test codes active.
+- **Metric and safety boundary:** MSE, MAE, PSNR, SSIM, mask-region scores, and visual
+  inspection measure image similarity, not diagnostic correctness. There was no
+  radiologist assessment, downstream clinical task, subgroup/fairness analysis,
+  privacy audit, uncertainty calibration, or deployment validation. Neither model is
+  suitable for clinical use on the evidence available here.
+- **Restricted performance benchmark:** latency is model-forward throughput on one
+  A100 with batch size 64 and tensors already resident on the GPU. It excludes storage,
+  preprocessing, transfer, queueing, and application overhead, and does not establish
+  single-slice latency or performance on other hardware.
+
+## Manager recommendation and next decision
+
+Retain the ConvVAE as the stronger **research baseline** for this dataset: it has much
+better whole-image and foreground reconstruction, stable patient-level results, and
+slightly better throughput under the same budget. This is a conditional research
+recommendation, not approval for clinical deployment.
+
+Do **not** advance the current VQ-VAE checkpoint to a downstream or generative stage.
+Its discrete representation uses only 2.54% of the test codebook, misses the stated
+SSIM target, produces systematic boundary smoothing, and is 11.6% slower per slice in
+the fixed batched benchmark. Preserve it as a valid negative result rather than tuning
+against the already observed test set.
+
+If a later project revisits the VQ route, it should define a new untouched test
+protocol and investigate codebook size/regularisation using validation data only,
+repeat training across seeds, expand the patient cohort, and evaluate 2.5D or 3D
+context. A learned prior, privacy/memorisation checks, external-site validation, and
+domain-expert review should occur only after reconstruction and code utilisation meet
+predeclared acceptance criteria.
+
 ## Evaluation outputs
 
 - Reconstruction: MSE, MAE, PSNR, and SSIM on the fixed test split.
@@ -571,6 +628,47 @@ The independent A100 timing evidence is stored in
 20 repetition measurements, protocol boundaries, software/device versions, sample
 identity, source commit, and checkpoint hashes; the CSV provides the two concise rows
 used in the report.
+
+## Provenance and external resources
+
+- **Data and task definition:** the NIfTI slices, masks, official split, and assessment
+  requirements come from the UQ COMP3710/7710 course materials. Raw data remain local
+  and are excluded from Git.
+- **Model code and weights:** a repository-wide source audit found no vendored external
+  model implementation, pretrained weight, or third-party checkpoint. `modules.py`,
+  `train.py`, `predict.py`, and the analysis scripts are project-specific implementations
+  built with public library APIs. Both reported checkpoints were trained from scratch
+  in this project; their SHA-256 hashes are recorded above.
+- **Conceptual sources:** the continuous VAE, VQ-VAE discrete bottleneck, and SSIM metric
+  follow the cited papers. These are conceptual/method references, not declarations
+  that source code was copied from the authors' repositories.
+- **Software dependencies:** [PyTorch](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html)
+  provides tensor operations, automatic
+  differentiation, neural-network layers, optimisation, and CUDA execution; NumPy
+  supports numerical analysis; NiBabel reads NIfTI files; Matplotlib creates figures.
+  The direct dependencies and version ranges are declared in `requirements.txt`.
+- **Compute and evidence:** formal training, test evaluation, and latency measurement
+  ran on UQ Rangpur A100 nodes. `make_report_assets.py` generates the tracked figures
+  and tables from frozen artifacts, while `provenance.json` and the latency JSON retain
+  job IDs, selection rules, hashes, device metadata, and source commit information.
+  Dataset files, per-slice raw outputs, and checkpoints are intentionally not tracked.
+
+## References
+
+1. D. P. Kingma and M. Welling, “Auto-Encoding Variational Bayes,” *International
+   Conference on Learning Representations*, 2014. [arXiv:1312.6114](https://arxiv.org/abs/1312.6114).
+2. A. van den Oord, O. Vinyals, and K. Kavukcuoglu, “Neural Discrete Representation
+   Learning,” *Advances in Neural Information Processing Systems 30*, 2017.
+   [Official proceedings](https://proceedings.neurips.cc/paper/2017/hash/7a98af17e63a0ac09ce2e96d03992fbc-Abstract.html).
+3. Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli, “Image Quality Assessment:
+   From Error Visibility to Structural Similarity,” *IEEE Transactions on Image
+   Processing*, 13(4), 600-612, 2004.
+   [doi:10.1109/TIP.2003.819861](https://ieeexplore.ieee.org/abstract/document/1284395/).
+4. A. Paszke et al., “PyTorch: An Imperative Style, High-Performance Deep Learning
+   Library,” *Advances in Neural Information Processing Systems 32*, 2019.
+   [Official proceedings](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html).
+5. The University of Queensland, “COMP3710/7710 Pattern Recognition Final Report
+   Specification,” draft v2.2, 2026. Internal course material.
 
 ## Required files
 
