@@ -1,11 +1,20 @@
 # HipMRI 2D Reconstruction with VAE and VQ-VAE
 
-## Project status
+**Student ID:** 49842339
 
-Stage 5 completed experiment. The patient-disjoint data pipeline, both 40-epoch model
-runs, validation-only checkpoint selection, guarded one-time test evaluation, and
-frozen-model inference benchmark have completed successfully on A100 GPUs. The final
-metrics below are now frozen; no post-test model tuning or retraining is permitted.
+## Executive summary
+
+This project tests whether a hard-difficulty VQ-VAE offers a useful fidelity,
+representation, and compute trade-off over a continuous ConvVAE baseline for 2D
+HipMRI reconstruction. Both models were trained from scratch for 40 epochs on the
+same patient-disjoint split and evaluated through validation-only checkpoint selection
+followed by one frozen test evaluation. The ConvVAE achieved test SSIM 0.9185 and MSE
+0.000500, whereas the VQ-VAE achieved SSIM 0.5897 and MSE 0.007269 while activating
+only 13 of 512 codebook entries. Under a fixed batched A100 benchmark, the VQ-VAE was
+also 11.6% slower per slice. Matched failure cases show systematic VQ-VAE smoothing
+at fine structures and intensity boundaries. The evidence therefore supports retaining
+the ConvVAE as the stronger research baseline and not advancing the current VQ-VAE
+checkpoint. All final metrics are frozen; no post-test tuning or retraining is used.
 
 ## Research question
 
@@ -29,7 +38,7 @@ reconstruction result is necessary for a useful VQ-VAE generator, but is not by 
 evidence that independently sampled images would be diverse, non-memorised, or safe
 for downstream clinical training.
 
-## Feasibility review
+## One-page feasibility review
 
 ### User need, scope, and acceptance criteria
 
@@ -264,6 +273,24 @@ for the one-time test evaluation.
 
 ## Environment and manifest
 
+The formal Rangpur runs used the following recorded environment. Exact Python and
+PyTorch versions are stored in both training configs; the NumPy version is retained
+in the latency artifact; and the NiBabel and Matplotlib versions were captured during
+the formal environment setup.
+
+| Component | Formal version / device |
+| --- | --- |
+| Python | 3.11.16 |
+| PyTorch | 2.14.0+cu130 |
+| CUDA build used by PyTorch | 13.0 |
+| NumPy | 2.4.6 |
+| NiBabel | 5.4.2 |
+| Matplotlib | 3.11.2 |
+| Training accelerator | NVIDIA A100-PCIE-40GB |
+
+`requirements.txt` retains compatible version bounds for installation, while the
+table above records the exact environment used for the reported results.
+
 From this directory:
 
 ```bash
@@ -458,6 +485,10 @@ maximum VQ-VAE MSE. Both models are then rendered on the identical input. The er
 maps within each row use the same colour scale, so their intensity is directly
 comparable within that row but not across different rows.
 
+Figure 5 provides concrete example inputs and outputs: every row begins with the
+normalised MRI input, followed by the ConvVAE and VQ-VAE reconstructions, their error
+maps, and the evaluation-only anatomical mask.
+
 ![Matched originals, ConvVAE and VQ-VAE reconstructions, error maps and masks](report_assets/matched_test_reconstructions.png)
 
 *Figure 5. Deterministically selected matched reconstructions from all three held-out patients.*
@@ -591,16 +622,6 @@ context. A learned prior, privacy/memorisation checks, external-site validation,
 domain-expert review should occur only after reconstruction and code utilisation meet
 predeclared acceptance criteria.
 
-## Evaluation outputs
-
-- Reconstruction: MSE, MAE, PSNR, and SSIM on the fixed test split.
-- VQ-VAE representation: codebook perplexity, active-code fraction, and dead codes.
-- Resources: parameter count, training time, peak accelerator memory, and independent
-  frozen-model inference latency/throughput.
-- Qualitative analysis: original/reconstruction/error-map panels for six lower-performing test cases per model.
-- Region-aware foreground/background analysis using masks only during evaluation.
-- Final recommendation based on quality, stability, resource use, and observed failure modes.
-
 ## Reproducible report assets
 
 After retrieving the frozen artifacts from Rangpur, generate the report figures and
@@ -628,6 +649,18 @@ The independent A100 timing evidence is stored in
 20 repetition measurements, protocol boundaries, software/device versions, sample
 identity, source commit, and checkpoint hashes; the CSV provides the two concise rows
 used in the report.
+
+## Codebase structure
+
+- `modules.py`: ConvVAE, vector quantiser, VQ-VAE, and loss functions.
+- `dataset.py`: NIfTI discovery, pairing, leakage checks, manifest generation, and loading.
+- `metrics.py`: shared MSE, MAE, PSNR, and windowed SSIM implementation.
+- `train.py`: training, validation, best-checkpoint selection, configuration, and history logging.
+- `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
+- `benchmark_latency.py`: frozen-checkpoint validation benchmark and CSV/JSON evidence generation.
+- `make_report_assets.py`: frozen-result verification and reproducible report figures/tables.
+- `slurm/`: Rangpur sanity, baseline, VQ-VAE, frozen-test, and latency scripts.
+- `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 
 ## Provenance and external resources
 
@@ -669,25 +702,3 @@ used in the report.
    [Official proceedings](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html).
 5. The University of Queensland, “COMP3710/7710 Pattern Recognition Final Report
    Specification,” draft v2.2, 2026. Internal course material.
-
-## Required files
-
-- `modules.py`: ConvVAE, vector quantiser, VQ-VAE, and loss functions.
-- `dataset.py`: NIfTI discovery, pairing, leakage checks, manifest generation, and loading.
-- `metrics.py`: shared MSE, MAE, PSNR, and windowed SSIM implementation.
-- `train.py`: training, validation, best-checkpoint selection, configuration, and history logging.
-- `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
-- `benchmark_latency.py`: frozen-checkpoint validation benchmark and CSV/JSON evidence generation.
-- `make_report_assets.py`: frozen-result verification and reproducible report figures/tables.
-- `slurm/`: Rangpur sanity, baseline, and VQ-VAE batch scripts with automatic resume.
-- `slurm/evaluate_test.sh`: guarded one-time evaluation of both frozen checkpoints.
-- `slurm/benchmark_latency.sh`: fixed A100 latency benchmark for both frozen checkpoints.
-- `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
-- `README.md`: experiment protocol, commands, evidence, and findings.
-
-## Immediate next steps
-
-1. Draft the final report from the frozen tables, figures, and interpretation in `report_assets/`.
-2. Add the assignment-required AI-use disclosure and retain the development evidence.
-3. Verify the final document against the marking criteria and page/format limits.
-4. Preserve the source commit and checkpoint hashes with the final submission evidence.
