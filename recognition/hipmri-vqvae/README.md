@@ -444,6 +444,96 @@ index level, but the chosen 512-entry codebook is heavily under-utilised and its
 reconstruction loss is substantial. Under this controlled budget, the ConvVAE
 is the recommended model for HipMRI reconstruction quality and stability.
 
+## Matched qualitative failure autopsies
+
+Here, a *failure case* means a lower-performing model/data example, not a coding
+mistake or a clinical diagnosis. The frozen selection rule chooses, for each test
+patient, the slice nearest that patient's median VQ-VAE MSE and the slice with the
+maximum VQ-VAE MSE. Both models are then rendered on the identical input. The error
+maps within each row use the same colour scale, so their intensity is directly
+comparable within that row but not across different rows.
+
+![Matched originals, ConvVAE and VQ-VAE reconstructions, error maps and masks](report_assets/matched_test_reconstructions.png)
+
+*Figure 5. Deterministically selected matched reconstructions from all three held-out patients.*
+
+The five cases below include all three patient-specific maxima plus two median-error
+examples. This covers every held-out patient while testing whether the observed pattern
+also occurs away from the extrema. The unused patient 041 median example remains in
+Figure 5 and `matched_test_selection.csv` for auditability.
+
+| Case | Selection basis | ConvVAE MSE / SSIM | VQ-VAE MSE / SSIM |
+| --- | --- | ---: | ---: |
+| Patient 040, week 3, slice 9 | Representative (subject median VQ-VAE MSE) | 0.000432 / 0.9205 | 0.006795 / 0.5978 |
+| Patient 040, week 7, slice 58 | Challenging (subject maximum VQ-VAE MSE) | 0.000855 / 0.8980 | 0.012125 / 0.5372 |
+| Patient 041, week 0, slice 58 | Challenging (subject maximum VQ-VAE MSE) | 0.000765 / 0.9015 | 0.010106 / 0.5328 |
+| Patient 042, week 0, slice 47 | Representative (subject median VQ-VAE MSE) | 0.000474 / 0.9073 | 0.005982 / 0.5715 |
+| Patient 042, week 0, slice 34 | Challenging (subject maximum VQ-VAE MSE) | 0.000707 / 0.9037 | 0.008047 / 0.5366 |
+
+### Case 1: patient 040, week 3, slice 9 - representative
+
+**Observed:** The ConvVAE preserves the bright central region, its boundary, and much
+of the surrounding texture. The VQ-VAE retains the coarse location but visibly smooths
+the boundary and nearby fine structure. Its error map contains a bright boundary ring
+and widespread responses along tissue interfaces; its MSE is 15.72 times the ConvVAE's.
+**Possible trigger and risk:** A sharp local intensity transition surrounded by
+high-frequency texture may be poorly represented by the sparse discrete codebook.
+That causal explanation is an inference, but the directly observed loss of boundary
+precision would be risky for any downstream use that depends on small spatial details.
+Because this is a patient-median example and the same smoothing appears in other rows,
+the pattern is systematic rather than an isolated outlier.
+
+### Case 2: patient 040, week 7, slice 58 - challenging
+
+**Observed:** This patient-specific maximum contains heterogeneous bright and dark
+regions with several thin transitions. The VQ-VAE merges or softens many of them,
+whereas the ConvVAE follows the original more closely. The VQ-VAE error is distributed
+across much of the non-background image and reaches MSE 0.012125, the largest of the
+six displayed selections. **Possible trigger and risk:** Dense, high-frequency content
+may exceed what the small active code subset can encode. The exact severity is an
+extreme case, but the underlying smoothing is systematic across patients. Fine or
+narrow structures could be suppressed before later analysis.
+
+### Case 3: patient 041, week 0, slice 58 - challenging
+
+**Observed:** The VQ-VAE reconstructs the broad intensity layout but blurs the edges
+of adjacent bright and dark regions. The strongest error-map responses follow those
+interfaces, while the ConvVAE error remains much weaker under the shared row scale.
+The VQ-VAE MSE is 13.21 times higher. **Possible trigger and risk:** Closely spaced,
+high-contrast boundaries may be quantised to representations that are too similar.
+This is a qualified mechanism rather than a proven cause. The cross-patient recurrence
+supports a systematic boundary-preservation limitation with a risk of merging nearby
+structures.
+
+### Case 4: patient 042, week 0, slice 47 - representative
+
+**Observed:** The original contains multiple small rounded and elongated features.
+The ConvVAE retains their separation, while the VQ-VAE smooths them into a coarser
+appearance; the corresponding error map traces many local edges. Even at the patient's
+median VQ-VAE error, its MSE is 12.62 times the baseline's. **Possible trigger and
+risk:** Several nearby low-contrast details may require more discrete capacity than
+the 13 active test codes provide. The median-based selection makes this evidence of a
+systematic loss of fine-detail separability, not just a maximum-error anomaly. The
+operational risk is that distinct nearby features could be merged in a downstream
+representation.
+
+### Case 5: patient 042, week 0, slice 34 - challenging
+
+**Observed:** This slice has an unusually heterogeneous, speckled bright region in the
+original. The ConvVAE reproduces much of that local variation, whereas the VQ-VAE
+replaces it with a smoother pattern and produces concentrated error in the same area.
+**Possible trigger and risk:** The distinctive appearance could represent uncommon
+image content, acquisition noise, or both; the available evidence cannot distinguish
+these explanations. Therefore this exact trigger may be isolated, but the model's
+smoothing response is consistent with the other cases. A system that suppresses rare
+or noisy-looking detail without flagging uncertainty could conceal atypical inputs.
+
+Across these five cases, the direct evidence supports one dominant systematic failure
+mode: VQ-VAE over-smoothing at fine structures and intensity boundaries. Case 5 may
+also contain an isolated unusual-appearance component, but no clinical or causal claim
+is made. The masks were used only to contextualise error locations, not as model input
+or evidence that a reconstruction is medically acceptable.
+
 ## Evaluation outputs
 
 - Reconstruction: MSE, MAE, PSNR, and SSIM on the fixed test split.
