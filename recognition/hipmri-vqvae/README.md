@@ -356,6 +356,12 @@ The revised A100 sanity job `642126` completed successfully in 46 seconds with e
 
 ## Frozen validation results
 
+In Figures 1-4, the ConvVAE is the continuous-latent baseline and the VQ-VAE is
+the hard-difficulty advanced model. Both use the same official patient-disjoint
+splits, deterministic preprocessing, 40-epoch budget, batch size, optimiser,
+random seed, and evaluation metrics. The comparison therefore isolates the
+representation choice rather than a different data or compute allocation.
+
 Both models completed the same 40-epoch, batch-size-64 budget on an A100 GPU.
 Checkpoint selection used validation objective only; the test patients were not
 accessed. The frozen VAE checkpoint is epoch 40 and the frozen VQ-VAE checkpoint
@@ -366,10 +372,31 @@ is epoch 38.
 | ConvVAE | 476,513 | 1,888.9 s | 1,348.9 MiB | 0.000569 | 0.014757 | 32.698 dB | 0.9178 |
 | VQ-VAE | 501,153 | 1,923.7 s | 1,348.9 MiB | 0.007637 | 0.055121 | 21.312 dB | 0.5579 |
 
+![Training and validation curves for the ConvVAE baseline and VQ-VAE hard model](report_assets/training_curves.png)
+
+*Figure 1. Training and validation behaviour under the shared 40-epoch budget.*
+
+The ConvVAE improves throughout training and finishes with substantially lower
+validation MSE and higher PSNR/SSIM. Its isolated validation fluctuation at epoch 39
+recovers at epoch 40. The VQ-VAE improves sharply at the start but then plateaus near
+validation MSE 0.008 and SSIM 0.56. Because its training and validation reconstruction
+curves level off together, the main limitation is underfitting/representation capacity
+under this configuration rather than a widening train-validation overfitting gap.
+
 The frozen VQ-VAE uses 14/512 entries on validation (2.73% active) with
 perplexity 10.30. It therefore avoids total collapse but learns a highly sparse
 discrete representation. This is a substantive negative result, not a reason
 to change the model after seeing validation outcomes.
+
+![VQ-VAE active-code count and validation codebook perplexity by epoch](report_assets/vq_codebook_usage.png)
+
+*Figure 2. Formal VQ-VAE validation codebook utilisation across training.*
+
+Active utilisation falls from 16 entries in the first epoch to 14 and then remains
+flat, while perplexity rises from about 8.1 to 10.3. The assignments become somewhat
+more balanced within that small active subset, but 498 of 512 entries remain unused.
+This is partial codebook collapse: the model is not mapping everything to one entry,
+yet most of the intended discrete capacity contributes nothing to the representation.
 
 ## Final one-time test results
 
@@ -390,12 +417,26 @@ The frozen checkpoint hashes were:
 | ConvVAE | 0.000025 | 0.002058 | 46.237 dB | 0.8444 |
 | VQ-VAE | 0.000593 | 0.006254 | 32.735 dB | 0.7668 |
 
+![Aggregate whole-image and foreground test metrics for both frozen models](report_assets/test_metric_comparison.png)
+
+*Figure 3. Frozen one-time aggregate test comparison over 540 slices from patients 040-042.*
+
 The ConvVAE test MSE is about 14.5 times lower, PSNR is 11.67 dB higher,
 and SSIM is 0.329 higher than the VQ-VAE. The same conclusion holds within
 segmented anatomical foreground, so the result is not explained by padded
 background pixels. Test metrics are close to or slightly better than validation
 metrics for both models, with no evidence of a held-out-patient generalisation
 collapse.
+
+![Per-patient MSE, PSNR and SSIM on the frozen test split](report_assets/per_subject_test_metrics.png)
+
+*Figure 4. Patient-level test performance for each held-out subject.*
+
+The ConvVAE has lower MSE and higher PSNR and SSIM for every held-out patient, so the
+aggregate advantage is not caused by a single favourable subject. This check matters
+because patient 040 contributes 420 of the 540 slices, whereas patients 041 and 042
+contribute 60 each. Patient 042 gives the VQ-VAE its highest PSNR but lowest SSIM,
+which also shows why a single pixel metric is insufficient for model selection.
 
 The VQ-VAE uses 13/512 codes on test (2.54% active) with perplexity 10.46,
 closely matching validation. Its representation is discrete and compact at the
