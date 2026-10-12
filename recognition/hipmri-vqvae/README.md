@@ -686,6 +686,43 @@ used in the report.
   job IDs, selection rules, hashes, device metadata, and source commit information.
   Dataset files, per-slice raw outputs, and checkpoints are intentionally not tracked.
 
+## Artificial Intelligence Usage Disclosure
+
+OpenAI Codex was used as an AI-assisted development and documentation tool during
+this project. It assisted with interpreting the assessment requirements, planning the
+controlled ConvVAE-VQ-VAE comparison, drafting and refactoring portions of the
+data-loading, model, training, evaluation, Slurm, benchmarking, and report-generation
+code, suggesting debugging steps from error logs, and improving the structure and
+wording of the README report. It did not provide the course dataset, pretrained
+weights, or a third-party model implementation.
+
+I retained responsibility for the project decisions and final claims. I selected the
+HipMRI VQ-VAE route, approved the experimental scope and acceptance criteria, executed
+the Rangpur jobs using my course account, reviewed the resulting logs and artifacts,
+and decided when changes were committed and pushed. AI suggestions were treated as
+proposals to be checked rather than as authoritative evidence.
+
+AI-assisted code and claims were verified through the following project evidence:
+
+- dataset pairing, shape, value-range, and patient-overlap assertions;
+- model smoke tests and deliberately limited CPU and A100 pipeline runs;
+- detection of the initial VQ codebook collapse, followed by a revised validation-only
+  sanity run;
+- an interrupted-versus-continuous resume test that produced identical histories and
+  final weights;
+- formal 40-epoch A100 training of both models under the same split and compute budget;
+- validation-only checkpoint selection followed by a guarded one-time evaluation of
+  the frozen test set;
+- SHA-256 verification of the reported checkpoints;
+- repeated frozen-model latency measurements using a documented timing protocol; and
+- direct inspection of saved metrics, training curves, codebook statistics, matched
+  reconstructions, and failure cases before including numerical claims in the report.
+
+The Git commit history preserves the progressive implementation, debugging,
+experimental, and documentation stages. AI-generated wording and code were not
+treated as substitutes for experimental validation. I remain responsible for the
+correctness of the submitted code, analysis, and conclusions.
+
 ## References
 
 1. D. P. Kingma and M. Welling, “Auto-Encoding Variational Bayes,” *International
