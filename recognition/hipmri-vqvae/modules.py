@@ -1,4 +1,4 @@
-"""Model definitions for the HipMRI VAE and VQ-VAE comparison."""
+"""Model definitions for the HipMRI VAE, VQ-VAE, and learned prior."""
 
 from __future__ import annotations
 
@@ -194,6 +194,170 @@ class VQVAE(nn.Module):
             "encoded": encoded,
             **quantizer_output,
         }
+
+
+class MaskedConv2d(nn.Conv2d):
+    """Convolution masked to preserve raster-order autoregressive causality."""
+
+    def __init__(self, mask_type: str, *args: object, **kwargs: object) -> None:
+        if mask_type not in {"A", "B"}:
+            raise ValueError("mask_type must be 'A' or 'B'.")
+        super().__init__(*args, **kwargs)
+        kernel_height, kernel_width = self.kernel_size
+        if kernel_height % 2 == 0 or kernel_width % 2 == 0:
+            raise ValueError("MaskedConv2d requires odd kernel dimensions.")
+
+        mask = torch.ones_like(self.weight)
+        centre_row = kernel_height // 2
+        centre_column = kernel_width // 2
+        mask[:, :, centre_row + 1 :, :] = 0
+        first_hidden_column = centre_column if mask_type == "A" else centre_column + 1
+        mask[:, :, centre_row, first_hidden_column:] = 0
+        self.mask_type = mask_type
+        self.register_buffer("mask", mask)
+
+    def forward(self, inputs: Tensor) -> Tensor:
+        return F.conv2d(
+            inputs,
+            self.weight * self.mask,
+            self.bias,
+            self.stride,
+            self.padding,
+            self.dilation,
+            self.groups,
+        )
+
+
+class PixelCNNResidualBlock(nn.Module):
+    """Residual block whose spatial convolution can only use past pixels."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        bottleneck_channels = max(channels // 2, 1)
+        self.network = nn.Sequential(
+            nn.ReLU(inplace=False),
+            nn.Conv2d(channels, bottleneck_channels, 1),
+            nn.ReLU(inplace=False),
+            MaskedConv2d(
+                "B",
+                bottleneck_channels,
+                bottleneck_channels,
+                3,
+                padding=1,
+            ),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(bottleneck_channels, channels, 1),
+        )
+
+    def forward(self, features: Tensor) -> Tensor:
+        return features + self.network(features)
+
+
+class PixelCNNPrior(nn.Module):
+    """Autoregressive categorical prior over compact VQ code indices."""
+
+    def __init__(
+        self,
+        num_tokens: int,
+        embedding_dim: int = 64,
+        hidden_channels: int = 64,
+        residual_blocks: int = 6,
+    ) -> None:
+        super().__init__()
+        if num_tokens <= 1:
+            raise ValueError("num_tokens must be greater than one.")
+        if embedding_dim <= 0 or hidden_channels <= 0:
+            raise ValueError("PixelCNN channel dimensions must be positive.")
+        if residual_blocks <= 0:
+            raise ValueError("residual_blocks must be positive.")
+
+        self.num_tokens = num_tokens
+        self.embedding_dim = embedding_dim
+        self.hidden_channels = hidden_channels
+        self.residual_blocks = residual_blocks
+        self.embedding = nn.Embedding(num_tokens, embedding_dim)
+        self.input_conv = MaskedConv2d(
+            "A",
+            embedding_dim,
+            hidden_channels,
+            7,
+            padding=3,
+        )
+        self.residual_stack = nn.Sequential(
+            *(PixelCNNResidualBlock(hidden_channels) for _ in range(residual_blocks))
+        )
+        self.output_head = nn.Sequential(
+            nn.ReLU(inplace=False),
+            nn.Conv2d(hidden_channels, hidden_channels, 1),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(hidden_channels, num_tokens, 1),
+        )
+
+    def forward(self, token_grids: Tensor) -> Tensor:
+        if token_grids.ndim != 3:
+            raise ValueError(
+                f"Expected token grids with shape [batch, height, width], got {token_grids.shape}."
+            )
+        if token_grids.dtype != torch.long:
+            raise TypeError("PixelCNN token grids must use torch.long indices.")
+        if token_grids.numel() == 0:
+            raise ValueError("PixelCNN received an empty token grid.")
+        if int(token_grids.min()) < 0 or int(token_grids.max()) >= self.num_tokens:
+            raise ValueError("A PixelCNN token is outside the compact vocabulary.")
+
+        embeddings = self.embedding(token_grids).permute(0, 3, 1, 2).contiguous()
+        features = self.input_conv(embeddings)
+        features = self.residual_stack(features)
+        return self.output_head(features)
+
+    @torch.inference_mode()
+    def sample(
+        self,
+        batch_size: int,
+        grid_shape: tuple[int, int],
+        device: torch.device,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        generator: torch.Generator | None = None,
+    ) -> Tensor:
+        """Draw categorical grids one position at a time in raster order."""
+
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive.")
+        if len(grid_shape) != 2 or min(grid_shape) <= 0:
+            raise ValueError("grid_shape must contain two positive dimensions.")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive.")
+        if top_k is not None and not 1 <= top_k <= self.num_tokens:
+            raise ValueError("top_k must lie within the compact vocabulary size.")
+
+        samples = torch.zeros((batch_size, *grid_shape), dtype=torch.long, device=device)
+        was_training = self.training
+        self.eval()
+        try:
+            for row in range(grid_shape[0]):
+                for column in range(grid_shape[1]):
+                    logits = self(samples)[:, :, row, column] / temperature
+                    if top_k is not None:
+                        top_values, top_indices = logits.topk(top_k, dim=1)
+                        probabilities = F.softmax(top_values, dim=1)
+                        selected = torch.multinomial(
+                            probabilities,
+                            1,
+                            generator=generator,
+                        )
+                        next_tokens = top_indices.gather(1, selected).squeeze(1)
+                    else:
+                        probabilities = F.softmax(logits, dim=1)
+                        next_tokens = torch.multinomial(
+                            probabilities,
+                            1,
+                            generator=generator,
+                        ).squeeze(1)
+                    samples[:, row, column] = next_tokens
+        finally:
+            self.train(was_training)
+        return samples
 
 
 def vae_loss(outputs: Dict[str, Tensor], targets: Tensor, beta: float = 1e-4) -> Dict[str, Tensor]:

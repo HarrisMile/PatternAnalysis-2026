@@ -29,14 +29,15 @@ modes. A useful prototype should reconstruct plausible anatomy, remain stable to
 train, avoid patient leakage and memorisation, and provide a compact representation
 without sacrificing clinically relevant boundaries.
 
-This implementation evaluates the reconstruction and representation-learning stage
-of that problem. It does **not** train an autoregressive prior over code indices, so it
-does not claim unconditional generation of new patient cohorts. The comparison is
-therefore deliberately scoped to fidelity, codebook utilisation, computational cost,
-and failure behaviour under identical inputs. This boundary is important: a strong
-reconstruction result is necessary for a useful VQ-VAE generator, but is not by itself
-evidence that independently sampled images would be diverse, non-memorised, or safe
-for downstream clinical training.
+The frozen results currently evaluate the reconstruction and representation-learning
+stage of that problem. A separate autoregressive-prior pipeline is implemented below,
+but it has not yet produced a formal trained checkpoint, so this report does not yet
+claim unconditional generation of new patient cohorts. The completed comparison is
+therefore scoped to fidelity, codebook utilisation, computational cost, and failure
+behaviour under identical inputs. This boundary is important: a strong reconstruction
+result is necessary for a useful VQ-VAE generator, but is not by itself evidence that
+independently sampled images would be diverse, non-memorised, or safe for downstream
+clinical training.
 
 ## One-page feasibility review
 
@@ -382,20 +383,75 @@ The ignored output directory contains:
 Rangpur, submit `slurm/export_code_indices.sh` after the frozen VQ-VAE checkpoint and
 manifest are present.
 
+## Learned-prior training and random sampling
+
+`train_prior.py` fits a raster-order PixelCNN to the exported code grids. The split is
+made again at patient level inside the original training cohort: with seed `3710`, 25
+patients are used to update the prior and six different patients are retained for
+prior checkpoint selection. Official validation patients `036-039` and test patients
+`040-042` are absent from both prior subsets. The active original VQ indices are mapped
+to a compact categorical vocabulary for efficient training, and the mapping is stored
+in every checkpoint so sampled tokens can be converted back to the frozen 512-entry
+VQ codebook.
+
+```bash
+python train_prior.py \
+  --data outputs/prior-data/train_code_indices.npz \
+  --data-summary outputs/prior-data/summary.json \
+  --output outputs/formal-prior \
+  --epochs 40 \
+  --batch-size 64 \
+  --learning-rate 2e-4 \
+  --validation-subjects 6 \
+  --seed 3710 \
+  --device cuda
+```
+
+Training reports categorical negative log-likelihood, bits per code, prior
+perplexity, and next-code accuracy. Checkpoints also record the exact code-archive,
+manifest, and frozen VQ-VAE hashes. The masked convolutions are tested for raster-order
+causality, so a position cannot use its own code or any future code when predicting.
+
+After validation selects `best.pt`, `sample_prior.py` draws code grids from an empty
+canvas one location at a time and decodes them with the matching frozen VQ-VAE:
+
+```bash
+python sample_prior.py \
+  --prior-checkpoint outputs/formal-prior/best.pt \
+  --vqvae-checkpoint outputs/formal-vqvae/best.pt \
+  --output predictions/formal-prior-samples \
+  --num-samples 32 \
+  --batch-size 8 \
+  --temperature 1.0 \
+  --seed 3710 \
+  --device cuda
+```
+
+The sampler refuses a VQ-VAE checkpoint whose hash differs from the one used for the
+code export. It saves the generated images and original code indices in `samples.npz`,
+a plain reconstruction panel in `samples.png`, and full sampling provenance in
+`summary.json`. These artifacts establish unconditional sampling capability only;
+diversity, distribution coverage, and nearest-training-neighbour memorisation checks
+remain separate evaluation steps. No formal prior result is reported until the Rangpur
+training and sampling jobs complete successfully.
+
 ## Rangpur execution
 
 The Rangpur workflow reuses the `comp3710lab2` Conda environment and the course account/partition pattern that was verified in earlier COMP3710 work. A live check on 8 October 2026 confirmed that the `comp3710` partition is available with A100 GPUs, the user account is associated with the `comp3710` Slurm account under normal QOS, and the existing environment contains CUDA-enabled PyTorch 2.14.0. `nibabel` was the only required package missing before installing this project's requirements. Because cluster configuration can change, run `sinfo` before every new submission and compare it with the current [EAIT Compute documentation](https://student.eait.uq.edu.au/infrastructure/compute/).
 
 The complete login, setup, submission, monitoring, and log-inspection sequence is in
-`RANGPUR_COMMANDS.txt`. Six Slurm scripts are provided:
+`RANGPUR_COMMANDS.txt`. Eight Slurm scripts are provided:
 
 - `slurm/gpu_sanity.sh`: short validation-only ConvVAE and VQ-VAE GPU pipeline check;
 - `slurm/train_vae.sh`: formal ConvVAE baseline training and validation evaluation;
 - `slurm/train_vqvae.sh`: formal VQ-VAE training and validation evaluation under the same defaults;
 - `slurm/evaluate_test.sh`: guarded one-time test evaluation of both frozen checkpoints;
-- `slurm/benchmark_latency.sh`: validation-only A100 timing of both frozen checkpoints; and
+- `slurm/benchmark_latency.sh`: validation-only A100 timing of both frozen checkpoints;
 - `slurm/export_code_indices.sh`: train-only extraction of frozen VQ code-index grids
-  for learned-prior training.
+  for learned-prior training;
+- `slurm/train_prior.sh`: patient-disjoint PixelCNN-prior training and checkpoint
+  selection within the original training cohort; and
+- `slurm/sample_prior.sh`: unconditional code sampling and frozen VQ-VAE decoding.
 
 The reported formal jobs used 40 epochs, batch size 64, learning rate `2e-4`, seed
 3710, four data workers, and one GPU. The training scripts retain environment-variable
@@ -691,7 +747,10 @@ used in the report.
 - `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
 - `benchmark_latency.py`: frozen-checkpoint validation benchmark and CSV/JSON evidence generation.
 - `make_report_assets.py`: frozen-result verification and reproducible report figures/tables.
-- `slurm/`: Rangpur sanity, baseline, VQ-VAE, frozen-test, and latency scripts.
+- `export_code_indices.py`: train-only VQ code-grid export with split and provenance guards.
+- `train_prior.py`: patient-disjoint PixelCNN-prior training, validation, and resume support.
+- `sample_prior.py`: unconditional VQ code sampling and matching-checkpoint image decoding.
+- `slurm/`: Rangpur sanity, model training, frozen evaluation, prior, and sampling scripts.
 - `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 
 ## Provenance and external resources
