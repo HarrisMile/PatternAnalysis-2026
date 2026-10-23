@@ -352,18 +352,50 @@ computed separately in both regions for each slice, then averaged across valid
 slices. This exposes whether whole-image scores are inflated by padded or
 background pixels. The masks are used only for evaluation, never as model input.
 
+## Learned-prior preparation
+
+`export_code_indices.py` converts every training slice into the frozen VQ-VAE's
+`32 x 18` grid of discrete code indices. The exporter is deliberately train-only:
+it has no split argument, re-validates patient isolation from the complete manifest,
+and records the held-out validation and test patient IDs in its summary. Validation
+and test images are not exported and must not be used to fit the prior.
+
+```bash
+python export_code_indices.py \
+  --checkpoint outputs/formal-vqvae/best.pt \
+  --manifest data/manifest.csv \
+  --output outputs/prior-data \
+  --batch-size 64 \
+  --device cpu
+```
+
+The ignored output directory contains:
+
+- `train_code_indices.npz`: compressed code grids plus patient, week, and slice IDs;
+- `train_samples.csv`: deterministic row-to-slice metadata;
+- `code_counts.csv`: all 512 code frequencies; and
+- `summary.json`: split guards, shapes, codebook statistics, source hashes, device,
+  and source commit.
+
+`--max-batches` is provided only for pipeline checks. A limited export is labelled in
+`summary.json` and must never be used to train or evaluate the learned prior. On
+Rangpur, submit `slurm/export_code_indices.sh` after the frozen VQ-VAE checkpoint and
+manifest are present.
+
 ## Rangpur execution
 
 The Rangpur workflow reuses the `comp3710lab2` Conda environment and the course account/partition pattern that was verified in earlier COMP3710 work. A live check on 8 October 2026 confirmed that the `comp3710` partition is available with A100 GPUs, the user account is associated with the `comp3710` Slurm account under normal QOS, and the existing environment contains CUDA-enabled PyTorch 2.14.0. `nibabel` was the only required package missing before installing this project's requirements. Because cluster configuration can change, run `sinfo` before every new submission and compare it with the current [EAIT Compute documentation](https://student.eait.uq.edu.au/infrastructure/compute/).
 
 The complete login, setup, submission, monitoring, and log-inspection sequence is in
-`RANGPUR_COMMANDS.txt`. Five Slurm scripts are provided:
+`RANGPUR_COMMANDS.txt`. Six Slurm scripts are provided:
 
 - `slurm/gpu_sanity.sh`: short validation-only ConvVAE and VQ-VAE GPU pipeline check;
 - `slurm/train_vae.sh`: formal ConvVAE baseline training and validation evaluation;
 - `slurm/train_vqvae.sh`: formal VQ-VAE training and validation evaluation under the same defaults;
-- `slurm/evaluate_test.sh`: guarded one-time test evaluation of both frozen checkpoints; and
-- `slurm/benchmark_latency.sh`: validation-only A100 timing of both frozen checkpoints.
+- `slurm/evaluate_test.sh`: guarded one-time test evaluation of both frozen checkpoints;
+- `slurm/benchmark_latency.sh`: validation-only A100 timing of both frozen checkpoints; and
+- `slurm/export_code_indices.sh`: train-only extraction of frozen VQ code-index grids
+  for learned-prior training.
 
 The reported formal jobs used 40 epochs, batch size 64, learning rate `2e-4`, seed
 3710, four data workers, and one GPU. The training scripts retain environment-variable
