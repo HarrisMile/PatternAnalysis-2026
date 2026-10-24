@@ -332,9 +332,13 @@ def train(args: argparse.Namespace) -> None:
             )
         model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
-        torch.set_rng_state(checkpoint["torch_rng_state"])
+        # ``map_location=device`` also moves the CPU RNG state onto CUDA.
+        # PyTorch requires CPU ByteTensors when restoring generator states.
+        torch.set_rng_state(checkpoint["torch_rng_state"].detach().cpu())
         if device.type == "cuda" and checkpoint.get("cuda_rng_states") is not None:
-            torch.cuda.set_rng_state_all(checkpoint["cuda_rng_states"])
+            torch.cuda.set_rng_state_all(
+                [state.detach().cpu() for state in checkpoint["cuda_rng_states"]]
+            )
         best_validation_loss = float(checkpoint["best_validation_loss"])
         best_epoch = int(checkpoint["best_epoch"])
         start_epoch = int(checkpoint["epoch"]) + 1
