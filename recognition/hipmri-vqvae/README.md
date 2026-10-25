@@ -20,7 +20,9 @@ validation subset of the original training cohort, also completes the hard-route
 generation pipeline. Thirty-two unconditional samples contain no exact pixel or VQ
 code-grid match to any of the 11,460 training slices and cover 14/15 training-active
 codes. However, their image distribution contains excessive black regions and
-fragmented anatomy. The generative extension is therefore a technically complete but
+fragmented anatomy. A frozen-decoder latent interpolation audit likewise changes
+adjacent frames continuously but retains or introduces implausible black bands and
+structural breaks. The generative extension is therefore a technically complete but
 low-quality negative result, not evidence of clinically realistic synthetic MRI.
 
 ## Research question
@@ -457,11 +459,16 @@ python evaluate_generation.py \
   --train-metadata outputs/formal-prior-data/train_samples.csv \
   --train-summary outputs/formal-prior-data/summary.json \
   --prior-summary outputs/formal-prior/summary.json \
+  --vqvae-checkpoint outputs/formal-vqvae/best.pt \
+  --device cpu \
   --overwrite
 ```
 
-The formal results, sample panel, distribution checks, and nearest-neighbour evidence
-are reported together below.
+The audit also decodes seven evenly spaced embedding interpolants for four generated
+sample/training-neighbour pairs selected at fixed ranks across the complete
+nearest-neighbour MSE distribution. It verifies the frozen VQ-VAE checkpoint hash and
+does not retrain either model. The formal results, sample panel, distribution checks,
+nearest-neighbour evidence, and interpolation diagnostic are reported together below.
 
 ## Rangpur execution
 
@@ -706,6 +713,7 @@ training time in total. Validation selected epoch 73.
 | Exact training pixel / code-grid matches | 0 / 0 |
 | Median nearest-training SSIM | 0.258 |
 | Median nearest-training code mismatch | 65.7% |
+| Adjacent interpolation-frame SSIM | median row mean 0.796; minimum 0.646 |
 
 ![Sixteen unconditional VQ-VAE samples decoded from PixelCNN code grids](report_assets/generative_evaluation/unconditional_samples.png)
 
@@ -733,6 +741,20 @@ Together, Figures 6–7 show that the pipeline achieves unconditional generation
 simple copying, but fails to produce a distributionally or anatomically convincing
 synthetic cohort.
 
+![Frozen-decoder interpolation between training-neighbour and generated VQ embeddings](report_assets/generative_evaluation/latent_interpolation.png)
+
+*Figure 8. Seven-point linear embedding interpolations from each nearest training-code decode at alpha 0 to its generated sample at alpha 1. The four rows are selected at fixed ranks across the complete nearest-training MSE distribution, rather than chosen visually.*
+
+The median of the four row-wise mean adjacent-frame SSIM values is `0.796`, and the
+lowest adjacent-frame SSIM is `0.646`. These values show that the frozen decoder changes
+its output incrementally along the tested paths. They do not establish semantic or
+anatomical continuity: all four rows preserve or develop black horizontal bands,
+fragmented regions, or abrupt structural displacement before reaching the generated
+endpoint. The endpoint-to-endpoint SSIM is only `0.250`–`0.284`. Intermediate tensors
+were deliberately not re-quantised, so this is a decoder-continuity diagnostic through
+off-codebook embedding space, not an additional sampling method or proof that the
+intermediate images lie on the learned discrete-data manifold.
+
 ## Limitations and threats to validity
 
 - **Small and imbalanced held-out cohort:** the test split has only three patients,
@@ -754,8 +776,9 @@ synthetic cohort.
   and the initial 32-sample audit detects neither exact training copies nor duplicate
   outputs. However, the sample size is small, the VQ-VAE remains below the approximate
   0.6 SSIM target on validation (0.5579) and test (0.5897), and image-space features
-  show large distribution shifts. The audit cannot establish clinical realism,
-  population coverage, or privacy.
+  show large distribution shifts. The interpolation paths are locally continuous but
+  pass through visibly implausible structures outside the discrete codebook support.
+  The audit cannot establish clinical realism, population coverage, or privacy.
 - **Metric and safety boundary:** MSE, MAE, PSNR, SSIM, mask-region scores, and visual
   inspection measure image similarity, not diagnostic correctness. There was no
   radiologist assessment, downstream clinical task, subgroup/fairness analysis,
@@ -818,9 +841,9 @@ used in the report.
 
 The generative evidence is stored under `report_assets/generative_evaluation/`.
 `REPORT_RESULTS.md` gives the concise interpretation; `summary.json` retains hashes,
-protocol details, and complete metrics; the CSV files retain per-sample neighbours and
-image-feature comparisons; and the two PNG files show the unconditional cohort and
-the closest training examples.
+protocol details, and complete metrics; the CSV files retain per-sample neighbours,
+image-feature comparisons, and interpolation metrics; and the three PNG files show the
+unconditional cohort, closest training examples, and frozen-decoder interpolation.
 
 ## Codebase structure
 
@@ -834,8 +857,8 @@ the closest training examples.
 - `export_code_indices.py`: train-only VQ code-grid export with split and provenance guards.
 - `train_prior.py`: patient-disjoint PixelCNN-prior training, validation, and resume support.
 - `sample_prior.py`: unconditional VQ code sampling and matching-checkpoint image decoding.
-- `evaluate_generation.py`: hash-guarded diversity, distribution-coverage, and
-  nearest-training-neighbour audit.
+- `evaluate_generation.py`: hash-guarded diversity, distribution-coverage,
+  nearest-training-neighbour, and latent-interpolation audit.
 - `slurm/`: Rangpur sanity, model training, frozen evaluation, prior, and sampling scripts.
 - `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 
@@ -896,7 +919,8 @@ AI-assisted code and claims were verified through the following project evidence
 - SHA-256 verification of the reported checkpoints;
 - repeated frozen-model latency measurements using a documented timing protocol;
 - validation-selected 80-epoch prior training, deterministic-seed sampling, exact
-  source-archive hash checks, and a full 11,460-slice nearest-neighbour audit; and
+  source-archive hash checks, a full 11,460-slice nearest-neighbour audit, and a
+  frozen-decoder latent-interpolation diagnostic; and
 - direct inspection of saved metrics, training curves, codebook statistics, matched
   reconstructions, unconditional samples, nearest neighbours, and failure cases before
   including numerical claims in the report.

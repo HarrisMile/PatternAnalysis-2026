@@ -19,7 +19,8 @@ from torch.utils.data import DataLoader
 
 from dataset import HipMRISliceDataset
 from metrics import reconstruction_metrics
-from train import positive_int
+from modules import VQVAE
+from train import describe_device, positive_int, select_device
 
 
 FEATURE_NAMES = (
@@ -60,6 +61,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("outputs/formal-prior/summary.json"),
     )
+    parser.add_argument(
+        "--vqvae-checkpoint",
+        type=Path,
+        default=Path("outputs/formal-vqvae/best.pt"),
+    )
     parser.add_argument("--manifest", type=Path, default=Path("data/manifest.csv"))
     parser.add_argument(
         "--output",
@@ -70,6 +76,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--downsample-factor", type=positive_int, default=4)
     parser.add_argument("--panel-samples", type=positive_int, default=8)
+    parser.add_argument("--interpolation-pairs", type=positive_int, default=4)
+    parser.add_argument("--interpolation-steps", type=positive_int, default=7)
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "cuda", "mps"),
+        default="auto",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -106,7 +119,11 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         raise ValueError(f"Cannot write an empty CSV: {path}")
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=list(rows[0]),
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
     temporary.replace(path)
@@ -193,6 +210,26 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
             f"{abs(feature_metrics['vertical_centre_of_mass']['standardised_mean_difference']):.2f} "
             "standard deviations. These shifts agree with the large black bands and fragmented "
             "anatomy visible in the sample panel."
+        ),
+        "",
+        "## Latent interpolation diagnostic",
+        "",
+        (
+            f"{summary['latent_interpolation']['pair_count']} generated/training-neighbour "
+            f"pairs were selected at fixed nearest-neighbour-distance ranks. Each pair was "
+            f"decoded at {summary['latent_interpolation']['steps']} evenly spaced points between "
+            "its training and generated codebook-embedding grids."
+        ),
+        (
+            "Adjacent interpolation-frame SSIM has median row mean "
+            f"{summary['latent_interpolation']['adjacent_ssim_mean_median']:.3f} and "
+            f"worst observed value {summary['latent_interpolation']['adjacent_ssim_min']:.3f}."
+        ),
+        "",
+        (
+            "The interpolation is a decoder-continuity diagnostic, not a new sampling method: "
+            "intermediate embedding tensors generally do not correspond to discrete codebook "
+            "entries and may therefore be off the learned VQ support."
         ),
         "",
         "## Conclusion",
@@ -457,35 +494,47 @@ def save_neighbour_panel(
     shown_indices = np.argsort([row["full_resolution_mse"] for row in audit_rows])[
         : min(panel_samples, len(audit_rows))
     ]
+    comparisons_per_row = 2
+    panel_rows = math.ceil(len(shown_indices) / comparisons_per_row)
     figure, axes = plt.subplots(
-        len(shown_indices),
-        3,
-        figsize=(10.5, 3.0 * len(shown_indices)),
+        panel_rows,
+        3 * comparisons_per_row,
+        figsize=(18.0, 3.2 * panel_rows),
         squeeze=False,
     )
-    for row_index, sample_index in enumerate(shown_indices):
+    for display_index, sample_index in enumerate(shown_indices):
+        row_index = display_index // comparisons_per_row
+        column_start = 3 * (display_index % comparisons_per_row)
         generated = generated_images[sample_index]
         neighbour = nearest_training_images[sample_index]
         difference = np.abs(generated - neighbour)
         row = audit_rows[sample_index]
-        axes[row_index, 0].imshow(generated, cmap="gray", vmin=0.0, vmax=1.0)
-        axes[row_index, 0].set_title(
+        generated_axis = axes[row_index, column_start]
+        neighbour_axis = axes[row_index, column_start + 1]
+        difference_axis = axes[row_index, column_start + 2]
+        generated_axis.imshow(generated, cmap="gray", vmin=0.0, vmax=1.0)
+        generated_axis.set_title(
             f"Generated sample {int(row['sample_id']) + 1}", fontsize=9
         )
-        axes[row_index, 1].imshow(neighbour, cmap="gray", vmin=0.0, vmax=1.0)
-        axes[row_index, 1].set_title(
+        neighbour_axis.imshow(neighbour, cmap="gray", vmin=0.0, vmax=1.0)
+        neighbour_axis.set_title(
             "Nearest training slice\n"
             f"patient {row['pixel_nn_subject_id']}, week {row['pixel_nn_week']}, "
             f"slice {row['pixel_nn_slice_index']}",
             fontsize=9,
         )
-        axes[row_index, 2].imshow(difference, cmap="magma", vmin=0.0, vmax=1.0)
-        axes[row_index, 2].set_title(
+        difference_axis.imshow(difference, cmap="magma", vmin=0.0, vmax=1.0)
+        difference_axis.set_title(
             f"Absolute error\nMSE={row['full_resolution_mse']:.4f}, "
             f"SSIM={row['full_resolution_ssim']:.3f}",
             fontsize=9,
         )
-        for axis in axes[row_index]:
+        for axis in (generated_axis, neighbour_axis, difference_axis):
+            axis.axis("off")
+    for empty_index in range(len(shown_indices), panel_rows * comparisons_per_row):
+        empty_row = empty_index // comparisons_per_row
+        empty_column = 3 * (empty_index % comparisons_per_row)
+        for axis in axes[empty_row, empty_column : empty_column + 3]:
             axis.axis("off")
     figure.suptitle("Generated samples and nearest training slices", fontsize=12)
     figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.995))
@@ -514,12 +563,206 @@ def save_sample_panel(path: Path, images: np.ndarray) -> None:
     plt.close(figure)
 
 
+def fixed_rank_indices(values: np.ndarray, count: int) -> tuple[np.ndarray, np.ndarray]:
+    """Select deterministic ranks spanning the complete sorted value range."""
+
+    if values.ndim != 1 or len(values) == 0:
+        raise ValueError("Rank selection requires a non-empty one-dimensional array.")
+    if count > len(values):
+        raise ValueError("--interpolation-pairs cannot exceed the generated sample count.")
+    rank_positions = np.rint(np.linspace(0, len(values) - 1, count)).astype(np.int64)
+    selected = np.argsort(values, kind="stable")[rank_positions]
+    quantiles = rank_positions.astype(np.float64) / max(len(values) - 1, 1)
+    return selected, quantiles
+
+
+def load_vqvae_decoder(
+    checkpoint_path: Path,
+    expected_sha256: str,
+    device: torch.device,
+) -> tuple[VQVAE, dict[str, Any], str]:
+    checkpoint_sha256 = sha256_file(checkpoint_path)
+    if checkpoint_sha256 != expected_sha256:
+        raise ValueError(
+            "The supplied VQ-VAE checkpoint does not match the checkpoint used for "
+            "the training-code export."
+        )
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    if checkpoint.get("model_name") != "vqvae":
+        raise ValueError("The interpolation checkpoint is not a VQ-VAE checkpoint.")
+    model = VQVAE()
+    model.load_state_dict(checkpoint["model_state"])
+    model = model.to(device).eval()
+    if not bool(model.quantizer.codebook_initialized.item()):
+        raise ValueError("The VQ-VAE codebook is not marked as initialised.")
+    return model, checkpoint, checkpoint_sha256
+
+
+def latent_interpolation(
+    model: VQVAE,
+    generated_codes: np.ndarray,
+    training_codes: np.ndarray,
+    generated_images: np.ndarray,
+    nearest_training_images: np.ndarray,
+    pixel_nearest_indices: np.ndarray,
+    metadata: list[dict[str, str]],
+    nearest_mse: np.ndarray,
+    pair_count: int,
+    steps: int,
+    device: torch.device,
+) -> tuple[np.ndarray, list[dict[str, Any]], np.ndarray]:
+    if steps < 2:
+        raise ValueError("--interpolation-steps must be at least two.")
+    selected, selection_quantiles = fixed_rank_indices(nearest_mse, pair_count)
+    generated_selected = torch.from_numpy(
+        generated_codes[selected].astype(np.int64, copy=False)
+    ).to(device)
+    training_selected_indices = pixel_nearest_indices[selected].astype(np.int64, copy=False)
+    training_selected = torch.from_numpy(
+        training_codes[training_selected_indices].astype(np.int64, copy=False)
+    ).to(device)
+    alphas = torch.linspace(0.0, 1.0, steps, device=device)
+
+    with torch.inference_mode():
+        training_embeddings = model.quantizer.embedding(training_selected)
+        generated_embeddings = model.quantizer.embedding(generated_selected)
+        interpolated_embeddings = (
+            (1.0 - alphas[None, :, None, None, None])
+            * training_embeddings[:, None]
+            + alphas[None, :, None, None, None] * generated_embeddings[:, None]
+        )
+        flat_embeddings = interpolated_embeddings.reshape(
+            pair_count * steps,
+            *interpolated_embeddings.shape[2:],
+        )
+        flat_embeddings = flat_embeddings.permute(0, 3, 1, 2).contiguous()
+        decoded = model.decoder(flat_embeddings)
+    decoded_numpy = (
+        decoded[:, 0]
+        .reshape(pair_count, steps, decoded.shape[-2], decoded.shape[-1])
+        .cpu()
+        .numpy()
+        .astype(np.float32, copy=False)
+    )
+    if not np.isfinite(decoded_numpy).all():
+        raise RuntimeError("Latent interpolation produced non-finite decoded images.")
+
+    adjacent_left = torch.from_numpy(decoded_numpy[:, :-1, None]).reshape(
+        pair_count * (steps - 1), 1, decoded.shape[-2], decoded.shape[-1]
+    )
+    adjacent_right = torch.from_numpy(decoded_numpy[:, 1:, None]).reshape_as(adjacent_left)
+    adjacent_metrics = reconstruction_metrics(adjacent_left, adjacent_right)
+    adjacent_mse = adjacent_metrics["mse"].reshape(pair_count, steps - 1).numpy()
+    adjacent_ssim = adjacent_metrics["ssim"].reshape(pair_count, steps - 1).numpy()
+
+    training_endpoint_metrics = reconstruction_metrics(
+        torch.from_numpy(nearest_training_images[selected][:, None]),
+        torch.from_numpy(decoded_numpy[:, 0, None]),
+    )
+    endpoint_metrics = reconstruction_metrics(
+        torch.from_numpy(decoded_numpy[:, 0, None]),
+        torch.from_numpy(decoded_numpy[:, -1, None]),
+    )
+    generated_endpoint_errors = np.abs(
+        decoded_numpy[:, -1] - generated_images[selected]
+    )
+    rows: list[dict[str, Any]] = []
+    for row_index, sample_index in enumerate(selected):
+        train_index = int(training_selected_indices[row_index])
+        metadata_row = metadata[train_index]
+        rows.append(
+            {
+                "selection_quantile": float(selection_quantiles[row_index]),
+                "generated_sample_id": int(sample_index),
+                "training_index": train_index,
+                "training_subject_id": metadata_row["subject_id"],
+                "training_week": int(metadata_row["week"]),
+                "training_slice_index": int(metadata_row["slice_index"]),
+                "nearest_training_full_resolution_mse": float(nearest_mse[sample_index]),
+                "endpoint_code_mismatch_fraction": float(
+                    np.mean(generated_codes[sample_index] != training_codes[train_index])
+                ),
+                "training_image_to_code_decode_ssim": float(
+                    training_endpoint_metrics["ssim"][row_index]
+                ),
+                "interpolation_endpoint_ssim": float(endpoint_metrics["ssim"][row_index]),
+                "generated_endpoint_max_abs_error": float(
+                    generated_endpoint_errors[row_index].max()
+                ),
+                "adjacent_mse_mean": float(adjacent_mse[row_index].mean()),
+                "adjacent_mse_max": float(adjacent_mse[row_index].max()),
+                "adjacent_ssim_mean": float(adjacent_ssim[row_index].mean()),
+                "adjacent_ssim_min": float(adjacent_ssim[row_index].min()),
+            }
+        )
+
+    generated_endpoint_error = float(generated_endpoint_errors.max())
+    if generated_endpoint_error > 1e-3:
+        raise RuntimeError(
+            "The generated interpolation endpoint does not reproduce the saved sample "
+            "within the cross-device numerical tolerance."
+        )
+    return decoded_numpy, rows, selected
+
+
+def save_interpolation_panel(
+    path: Path,
+    interpolated_images: np.ndarray,
+    interpolation_rows: list[dict[str, Any]],
+) -> None:
+    pair_count, steps = interpolated_images.shape[:2]
+    alphas = np.linspace(0.0, 1.0, steps)
+    figure, axes = plt.subplots(
+        pair_count,
+        steps,
+        figsize=(2.55 * steps, 3.15 * pair_count),
+        squeeze=False,
+    )
+    for row_index, row in enumerate(interpolation_rows):
+        for step_index, alpha in enumerate(alphas):
+            axis = axes[row_index, step_index]
+            axis.imshow(
+                interpolated_images[row_index, step_index],
+                cmap="gray",
+                vmin=0.0,
+                vmax=1.0,
+            )
+            if row_index == 0:
+                endpoint = "\ntraining-code decode" if step_index == 0 else ""
+                if step_index == steps - 1:
+                    endpoint = "\ngenerated sample"
+                axis.set_title(f"alpha={alpha:.2f}{endpoint}", fontsize=9)
+            axis.axis("off")
+        axes[row_index, 0].text(
+            -0.10,
+            0.5,
+            (
+                f"rank q={row['selection_quantile']:.2f}\n"
+                f"sample {int(row['generated_sample_id']) + 1}\n"
+                f"train {row['training_subject_id']} / w{row['training_week']} / "
+                f"s{row['training_slice_index']}"
+            ),
+            transform=axes[row_index, 0].transAxes,
+            ha="right",
+            va="center",
+            fontsize=8,
+        )
+    figure.suptitle(
+        "Frozen-decoder interpolation from nearest training-code grids to generated-code grids",
+        fontsize=12,
+    )
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.985))
+    figure.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     samples_path = args.samples.resolve()
     train_codes_path = args.train_codes.resolve()
     metadata_path = args.train_metadata.resolve()
     train_summary_path = args.train_summary.resolve()
     prior_summary_path = args.prior_summary.resolve()
+    vqvae_checkpoint_path = args.vqvae_checkpoint.resolve()
     manifest_path = args.manifest.resolve()
     output = args.output.resolve()
     for path in (
@@ -528,11 +771,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         metadata_path,
         train_summary_path,
         prior_summary_path,
+        vqvae_checkpoint_path,
         manifest_path,
     ):
         if not path.is_file():
             raise FileNotFoundError(path)
     prepare_output(output, args.overwrite)
+
+    device = select_device(args.device)
 
     train_summary = read_json(train_summary_path)
     prior_summary = read_json(prior_summary_path)
@@ -552,6 +798,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         != train_summary.get("checkpoint", {}).get("sha256")
     ):
         raise ValueError("The prior and code-export summaries refer to different VQ-VAE checkpoints.")
+    expected_vqvae_sha256 = str(train_summary.get("checkpoint", {}).get("sha256", ""))
+    if not expected_vqvae_sha256:
+        raise ValueError("The training-code summary has no source VQ-VAE checkpoint hash.")
+    vqvae, vqvae_checkpoint, vqvae_sha256 = load_vqvae_decoder(
+        vqvae_checkpoint_path,
+        expected_vqvae_sha256,
+        device,
+    )
 
     with np.load(samples_path) as archive:
         generated_images = validate_images(archive["images"], "generated images")
@@ -654,6 +908,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     distribution_csv = output / "distribution_metrics.csv"
     neighbour_panel = output / "nearest_training_neighbours.png"
     sample_panel = output / "unconditional_samples.png"
+    interpolation_csv = output / "latent_interpolation_metrics.csv"
+    interpolation_panel = output / "latent_interpolation.png"
     report_path = output / "REPORT_RESULTS.md"
     write_csv(neighbour_csv, audit_rows)
     write_csv(distribution_csv, distribution)
@@ -668,8 +924,33 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
     nearest_mse = np.asarray([row["full_resolution_mse"] for row in audit_rows])
     nearest_ssim = np.asarray([row["full_resolution_ssim"] for row in audit_rows])
+    interpolated_images, interpolation_rows, interpolation_sample_indices = latent_interpolation(
+        vqvae,
+        generated_codes,
+        training_codes,
+        generated_images,
+        nearest_training_images,
+        pixel_nearest_indices,
+        metadata,
+        nearest_mse,
+        args.interpolation_pairs,
+        args.interpolation_steps,
+        device,
+    )
+    write_csv(interpolation_csv, interpolation_rows)
+    save_interpolation_panel(
+        interpolation_panel,
+        interpolated_images,
+        interpolation_rows,
+    )
+    adjacent_ssim_means = np.asarray(
+        [row["adjacent_ssim_mean"] for row in interpolation_rows], dtype=np.float64
+    )
+    adjacent_ssim_minima = np.asarray(
+        [row["adjacent_ssim_min"] for row in interpolation_rows], dtype=np.float64
+    )
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "protocol": {
             "reference_split": "train",
@@ -683,6 +964,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "pixel_confirmation": "Full-resolution MSE, MAE, PSNR, and SSIM",
             "code_search": "Hamming mismatch fraction on 32x18 VQ index grids",
+            "interpolation": (
+                "Linear interpolation between frozen VQ codebook-embedding grids; "
+                "intermediate points are not re-quantised"
+            ),
         },
         "inputs": {
             "samples": {"path": str(samples_path), "sha256": sha256_file(samples_path)},
@@ -701,6 +986,12 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "prior_summary": {
                 "path": str(prior_summary_path),
                 "sha256": sha256_file(prior_summary_path),
+            },
+            "vqvae_checkpoint": {
+                "path": str(vqvae_checkpoint_path),
+                "sha256": vqvae_sha256,
+                "epoch": int(vqvae_checkpoint["epoch"]),
+                "best_epoch": int(vqvae_checkpoint["best_epoch"]),
             },
             "manifest": {"path": str(manifest_path), "sha256": sha256_file(manifest_path)},
         },
@@ -736,16 +1027,43 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "image_feature_metrics": distribution,
         },
+        "latent_interpolation": {
+            "pair_count": int(len(interpolation_rows)),
+            "steps": int(args.interpolation_steps),
+            "alphas": np.linspace(0.0, 1.0, args.interpolation_steps).tolist(),
+            "device": {
+                "requested": args.device,
+                "resolved": str(device),
+                "name": describe_device(device),
+            },
+            "selection_rule": (
+                "Evenly spaced ranks across generated-sample nearest-training full-resolution MSE"
+            ),
+            "selected_generated_sample_ids": interpolation_sample_indices.astype(int).tolist(),
+            "intermediate_embeddings_requantised": False,
+            "generated_endpoint_max_abs_error": float(
+                max(row["generated_endpoint_max_abs_error"] for row in interpolation_rows)
+            ),
+            "adjacent_ssim_mean_median": float(np.median(adjacent_ssim_means)),
+            "adjacent_ssim_min": float(adjacent_ssim_minima.min()),
+            "rows": interpolation_rows,
+        },
         "limitations": [
             "Pixel-space nearest-neighbour search is sensitive to padding and intensity alignment.",
             "No exact or close neighbour is evidence against direct copying, not a privacy guarantee.",
             "Thirty-two samples support an initial audit but not clinical validation.",
+            (
+                "Linear embedding interpolation probes decoder continuity but intermediate "
+                "latents can lie outside the discrete codebook support."
+            ),
         ],
         "artifacts": {
             "nearest_training_neighbours": neighbour_csv.name,
             "distribution_metrics": distribution_csv.name,
             "nearest_training_neighbour_panel": neighbour_panel.name,
             "unconditional_sample_panel": sample_panel.name,
+            "latent_interpolation_metrics": interpolation_csv.name,
+            "latent_interpolation_panel": interpolation_panel.name,
             "text_report": report_path.name,
         },
     }
