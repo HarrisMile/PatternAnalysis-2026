@@ -1,0 +1,171 @@
+{
+  "artifacts": {
+    "distribution_metrics": "distribution_metrics.csv",
+    "nearest_training_neighbour_panel": "nearest_training_neighbours.png",
+    "nearest_training_neighbours": "nearest_training_neighbours.csv",
+    "text_report": "REPORT_RESULTS.md",
+    "unconditional_sample_panel": "unconditional_samples.png"
+  },
+  "created_utc": "2026-10-25T05:22:33.781548+00:00",
+  "distribution_coverage": {
+    "code_jensen_shannon_divergence_nats": 0.040393247850633834,
+    "generated_active_codes": 14,
+    "generated_code_perplexity": 10.365218356016992,
+    "generated_coverage_of_train_active_codes": 0.9333333333333333,
+    "image_feature_metrics": [
+      {
+        "feature": "mean_intensity",
+        "generated_fraction_inside_train_p05_p95": 0.65625,
+        "generated_mean": 0.15596746536903083,
+        "generated_std": 0.05775717801458933,
+        "quantile_wasserstein_distance": 0.03803847538758735,
+        "standardised_mean_difference": -0.8125423312267214,
+        "train_mean": 0.19436173898543363,
+        "train_p05": 0.1287086524069309,
+        "train_p95": 0.2782528862357139,
+        "train_std": 0.04725202877545804
+      },
+      {
+        "feature": "intensity_std",
+        "generated_fraction_inside_train_p05_p95": 0.71875,
+        "generated_mean": 0.18807629914954305,
+        "generated_std": 0.03942393212105453,
+        "quantile_wasserstein_distance": 0.02848599804132492,
+        "standardised_mean_difference": -0.922793271757841,
+        "train_mean": 0.21723139572492028,
+        "train_p05": 0.17038941904902458,
+        "train_p95": 0.27468384951353075,
+        "train_std": 0.031594396564941694
+      },
+      {
+        "feature": "near_zero_fraction",
+        "generated_fraction_inside_train_p05_p95": 0.1875,
+        "generated_mean": 0.37524837917751735,
+        "generated_std": 0.18964521067126813,
+        "quantile_wasserstein_distance": 0.1433531611346553,
+        "standardised_mean_difference": 2.387071390988806,
+        "train_mean": 0.2594617037711181,
+        "train_p05": 0.1909722222222222,
+        "train_p95": 0.3487413194444444,
+        "train_std": 0.04850574467252799
+      },
+      {
+        "feature": "tissue_fraction",
+        "generated_fraction_inside_train_p05_p95": 0.34375,
+        "generated_mean": 0.5619896782769097,
+        "generated_std": 0.183772460226956,
+        "quantile_wasserstein_distance": 0.11287991235110377,
+        "standardised_mean_difference": -1.2449418022426464,
+        "train_mean": 0.6495472959614965,
+        "train_p05": 0.5221082899305556,
+        "train_p95": 0.7473700629340277,
+        "train_std": 0.07033069138401485
+      },
+      {
+        "feature": "intensity_p95",
+        "generated_fraction_inside_train_p05_p95": 0.75,
+        "generated_mean": 0.5445062736980617,
+        "generated_std": 0.146837750546653,
+        "quantile_wasserstein_distance": 0.0749673385233074,
+        "standardised_mean_difference": -0.6469031568711562,
+        "train_mean": 0.6196725129613078,
+        "train_p05": 0.4342100977897644,
+        "train_p95": 0.8038290202617645,
+        "train_std": 0.11619395958244942
+      },
+      {
+        "feature": "vertical_centre_of_mass",
+        "generated_fraction_inside_train_p05_p95": 0.21875,
+        "generated_mean": 0.4448498277924955,
+        "generated_std": 0.11617218392667332,
+        "quantile_wasserstein_distance": 0.09699355972724243,
+        "standardised_mean_difference": -4.656754994455198,
+        "train_mean": 0.5381945484049657,
+        "train_p05": 0.5047091156244278,
+        "train_p95": 0.5690046399831772,
+        "train_std": 0.020045014333718626
+      },
+      {
+        "feature": "horizontal_centre_of_mass",
+        "generated_fraction_inside_train_p05_p95": 0.5625,
+        "generated_mean": 0.5212558284401894,
+        "generated_std": 0.037047601632150616,
+        "quantile_wasserstein_distance": 0.01059915066703216,
+        "standardised_mean_difference": -0.0894826615923969,
+        "train_mean": 0.5231228228898989,
+        "train_p05": 0.4887137547135353,
+        "train_p95": 0.5563871443271637,
+        "train_std": 0.02086431512524585
+      }
+    ],
+    "train_active_codes": 15,
+    "train_code_perplexity": 10.509923937207427
+  },
+  "diversity": {
+    "exact_duplicate_code_grids": 0,
+    "exact_duplicate_images": 0,
+    "nearest_generated_code_mismatch_fraction_median": 0.5711805555555556,
+    "nearest_generated_pixel_mse_median": 0.03289126604795456,
+    "pairwise_code_mismatch_fraction_mean": 0.7404863911290323,
+    "pairwise_code_mismatch_fraction_median": 0.7569444444444444,
+    "pairwise_code_mismatch_fraction_min": 0.3888888888888889,
+    "pairwise_pixel_mse_mean": 0.06884683668613434,
+    "pairwise_pixel_mse_median": 0.06562063097953796,
+    "pairwise_pixel_mse_min": 0.02154603786766529
+  },
+  "inputs": {
+    "manifest": {
+      "path": "/Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026/recognition/hipmri-vqvae/data/manifest.csv",
+      "sha256": "38d6f5ec7f782444ed5c6abf46877686f1050e249d8efa98198c36ca0775444e"
+    },
+    "prior_summary": {
+      "path": "/Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026/recognition/hipmri-vqvae/outputs/formal-prior/summary.json",
+      "sha256": "bb8680fa6b5fce2483bc16723427394ace7b0049765cdc6d98c50ef371791530"
+    },
+    "samples": {
+      "path": "/Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026/recognition/hipmri-vqvae/predictions/formal-prior-samples/samples.npz",
+      "sha256": "c04ecd4cbf94dd43200b4ee93e9952c36c869c30323a3f5d7fce9658e306a31d"
+    },
+    "train_codes": {
+      "path": "/Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026/recognition/hipmri-vqvae/outputs/formal-prior-data/train_code_indices.npz",
+      "sha256": "414754244565e6b7ead31908bec0fa53cc8f9c95fdd5c597e2d4805e791fafc1"
+    },
+    "train_metadata": {
+      "path": "/Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026/recognition/hipmri-vqvae/outputs/formal-prior-data/train_samples.csv",
+      "sha256": "66a02cfc2c3252b79320bdce7fa77815d9936d8fe4c3930cb8a8f89eef578cf4"
+    },
+    "train_summary": {
+      "path": "/Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026/recognition/hipmri-vqvae/outputs/formal-prior-data/summary.json",
+      "sha256": "d4c714de99863de9fb2b13f25e077d1f233d86c95662c9c9e0494ef83573e289"
+    }
+  },
+  "limitations": [
+    "Pixel-space nearest-neighbour search is sensitive to padding and intensity alignment.",
+    "No exact or close neighbour is evidence against direct copying, not a privacy guarantee.",
+    "Thirty-two samples support an initial audit but not clinical validation."
+  ],
+  "memorisation_audit": {
+    "exact_code_grid_matches": 0,
+    "exact_pixel_matches": 0,
+    "nearest_training_code_mismatch_fraction_max": 0.8072916666666666,
+    "nearest_training_code_mismatch_fraction_median": 0.6571180555555556,
+    "nearest_training_code_mismatch_fraction_min": 0.515625,
+    "nearest_training_full_resolution_mse_max": 0.07404252886772156,
+    "nearest_training_full_resolution_mse_median": 0.04197610914707184,
+    "nearest_training_full_resolution_mse_min": 0.02833007462322712,
+    "nearest_training_full_resolution_ssim_max": 0.32971516251564026,
+    "nearest_training_full_resolution_ssim_median": 0.25829780101776123,
+    "nearest_training_full_resolution_ssim_min": 0.20580421388149261
+  },
+  "protocol": {
+    "code_search": "Hamming mismatch fraction on 32x18 VQ index grids",
+    "formal_prior_data_hash_verified": true,
+    "generated_samples": 32,
+    "patient_disjoint_manifest_retained": true,
+    "pixel_confirmation": "Full-resolution MSE, MAE, PSNR, and SSIM",
+    "pixel_search": "MSE on deterministic 4x average-pooled normalised slices",
+    "reference_split": "train",
+    "training_samples": 11460
+  },
+  "schema_version": 1
+}

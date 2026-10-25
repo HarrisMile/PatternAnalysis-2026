@@ -15,6 +15,13 @@ also 11.6% slower per slice. Matched failure cases show systematic VQ-VAE smooth
 at fine structures and intensity boundaries. The evidence therefore supports retaining
 the ConvVAE as the stronger research baseline and not advancing the current VQ-VAE
 checkpoint. All final metrics are frozen; no post-test tuning or retraining is used.
+An 80-epoch PixelCNN prior, selected at epoch 73 by an internal patient-disjoint
+validation subset of the original training cohort, also completes the hard-route
+generation pipeline. Thirty-two unconditional samples contain no exact pixel or VQ
+code-grid match to any of the 11,460 training slices and cover 14/15 training-active
+codes. However, their image distribution contains excessive black regions and
+fragmented anatomy. The generative extension is therefore a technically complete but
+low-quality negative result, not evidence of clinically realistic synthetic MRI.
 
 ## Research question
 
@@ -29,15 +36,13 @@ modes. A useful prototype should reconstruct plausible anatomy, remain stable to
 train, avoid patient leakage and memorisation, and provide a compact representation
 without sacrificing clinically relevant boundaries.
 
-The frozen results currently evaluate the reconstruction and representation-learning
-stage of that problem. A separate autoregressive-prior pipeline is implemented below,
-but it has not yet produced a formal trained checkpoint, so this report does not yet
-claim unconditional generation of new patient cohorts. The completed comparison is
-therefore scoped to fidelity, codebook utilisation, computational cost, and failure
-behaviour under identical inputs. This boundary is important: a strong reconstruction
-result is necessary for a useful VQ-VAE generator, but is not by itself evidence that
-independently sampled images would be diverse, non-memorised, or safe for downstream
-clinical training.
+The frozen reconstruction results are supplemented by a learned autoregressive prior
+over VQ indices. This enables reproducible unconditional sampling and permits an
+initial diversity, distribution-coverage, and nearest-training-neighbour audit. The
+extension does not rescue the weak VQ-VAE result: generated code frequencies resemble
+the training export, but decoded image structure is substantially shifted and often
+fragmented. Neither reconstruction similarity nor the absence of exact training-set
+copies establishes clinical realism, privacy, or downstream safety.
 
 ## One-page feasibility review
 
@@ -399,7 +404,7 @@ python train_prior.py \
   --data outputs/prior-data/train_code_indices.npz \
   --data-summary outputs/prior-data/summary.json \
   --output outputs/formal-prior \
-  --epochs 40 \
+  --epochs 80 \
   --batch-size 64 \
   --learning-rate 2e-4 \
   --validation-subjects 6 \
@@ -411,6 +416,10 @@ Training reports categorical negative log-likelihood, bits per code, prior
 perplexity, and next-code accuracy. Checkpoints also record the exact code-archive,
 manifest, and frozen VQ-VAE hashes. The masked convolutions are tested for raster-order
 causality, so a position cannot use its own code or any future code when predicting.
+The formal A100 run completed 80 epochs and selected epoch 73, with validation NLL
+`0.897663` and categorical perplexity `2.453863`. The second 40-epoch segment resumed
+from the epoch-40 checkpoint; no test patient or official validation patient was used
+for prior fitting or selection.
 
 After validation selects `best.pt`, `sample_prior.py` draws code grids from an empty
 canvas one location at a time and decodes them with the matching frozen VQ-VAE:
@@ -430,10 +439,31 @@ python sample_prior.py \
 The sampler refuses a VQ-VAE checkpoint whose hash differs from the one used for the
 code export. It saves the generated images and original code indices in `samples.npz`,
 a plain reconstruction panel in `samples.png`, and full sampling provenance in
-`summary.json`. These artifacts establish unconditional sampling capability only;
-diversity, distribution coverage, and nearest-training-neighbour memorisation checks
-remain separate evaluation steps. No formal prior result is reported until the Rangpur
-training and sampling jobs complete successfully.
+`summary.json`. The formal A100 sampling job generated 32 slices in 22 seconds using
+temperature `1.0` and seed `3710`.
+
+The separate audit compares every generated image and code grid with all 11,460
+training slices. It refuses to run unless the training-code archive SHA-256 matches
+the archive recorded by the formal prior:
+
+```bash
+python evaluate_generation.py \
+  --train-codes outputs/formal-prior-data/train_code_indices.npz \
+  --train-metadata outputs/formal-prior-data/train_samples.csv \
+  --train-summary outputs/formal-prior-data/summary.json \
+  --prior-summary outputs/formal-prior/summary.json \
+  --overwrite
+```
+
+No exact pixel match, exact VQ code-grid match, or duplicate generated sample was
+found. Median nearest-training SSIM is `0.258`, and the median nearest-training code
+mismatch fraction is `0.657`. The samples cover 14/15 training-active codes, with
+code-frequency Jensen-Shannon divergence `0.0404` nats. Image-space coverage is much
+weaker: near-zero area is `2.39` training standard deviations too high, tissue area is
+`1.24` standard deviations too low, and vertical centre of mass is shifted by `4.66`
+standard deviations. These measurements support the visual finding of large black
+bands and fragmented anatomy. The audit is evidence against exact copying, not a
+formal privacy guarantee or clinical validation.
 
 ## Rangpur execution
 
@@ -453,10 +483,11 @@ The complete login, setup, submission, monitoring, and log-inspection sequence i
   selection within the original training cohort; and
 - `slurm/sample_prior.sh`: unconditional code sampling and frozen VQ-VAE decoding.
 
-The reported formal jobs used 40 epochs, batch size 64, learning rate `2e-4`, seed
-3710, four data workers, and one GPU. The training scripts retain environment-variable
-overrides for future reproducibility checks, but the frozen results use these stated
-values.
+The reconstruction jobs used 40 epochs, while the learned prior used 80 epochs after
+validation continued improving at epoch 40. All formal training used batch size 64,
+learning rate `2e-4`, seed 3710, four data workers, and one GPU. The scripts retain
+environment-variable overrides for reproducibility checks, but the frozen results use
+these stated values.
 
 Every epoch writes `last.pt`; the best validation checkpoint remains in `best.pt`. If Slurm requeues a job, the scripts detect `last.pt` and pass `--resume`. The trainer restores the model, optimiser, epoch history, and PyTorch random state. A local interrupted-versus-continuous test produced identical metric histories and exactly equal final model weights.
 
@@ -675,11 +706,12 @@ or evidence that a reconstruction is medically acceptable.
   normalisation improves numerical consistency but removes absolute scanner-intensity
   differences. Zero padding also changes the whole-image pixel distribution, although
   foreground metrics were added to check that background did not determine the result.
-- **Incomplete generative scope:** no learned autoregressive prior over VQ indices was
-  trained. The experiment evaluates reconstruction and representation learning only;
-  it cannot support claims about unconditional sample quality, cohort diversity, or
-  memorisation. The VQ-VAE also remains below the approximate 0.6 SSIM target on both
-  validation (0.5579) and test (0.5897), with only 13/512 test codes active.
+- **Low-quality generative result:** the learned prior enables unconditional sampling,
+  and the initial 32-sample audit detects neither exact training copies nor duplicate
+  outputs. However, the sample size is small, the VQ-VAE remains below the approximate
+  0.6 SSIM target on validation (0.5579) and test (0.5897), and image-space features
+  show large distribution shifts. The audit cannot establish clinical realism,
+  population coverage, or privacy.
 - **Metric and safety boundary:** MSE, MAE, PSNR, SSIM, mask-region scores, and visual
   inspection measure image similarity, not diagnostic correctness. There was no
   radiologist assessment, downstream clinical task, subgroup/fairness analysis,
@@ -697,18 +729,20 @@ better whole-image and foreground reconstruction, stable patient-level results, 
 slightly better throughput under the same budget. This is a conditional research
 recommendation, not approval for clinical deployment.
 
-Do **not** advance the current VQ-VAE checkpoint to a downstream or generative stage.
-Its discrete representation uses only 2.54% of the test codebook, misses the stated
-SSIM target, produces systematic boundary smoothing, and is 11.6% slower per slice in
-the fixed batched benchmark. Preserve it as a valid negative result rather than tuning
-against the already observed test set.
+Do **not** advance the current VQ-VAE and prior to downstream use. The experimental
+prior was trained only to complete and audit the required hard-route pipeline. Its
+decoder uses only 2.54% of the test codebook, misses the stated SSIM target, produces
+systematic boundary smoothing, and is 11.6% slower per slice in the fixed batched
+benchmark. The random samples add substantial anatomical fragmentation. Preserve the
+complete pipeline as a valid negative result rather than tuning against the observed
+test set or presenting it as a clinically useful generator.
 
 If a later project revisits the VQ route, it should define a new untouched test
 protocol and investigate codebook size/regularisation using validation data only,
 repeat training across seeds, expand the patient cohort, and evaluate 2.5D or 3D
-context. A learned prior, privacy/memorisation checks, external-site validation, and
-domain-expert review should occur only after reconstruction and code utilisation meet
-predeclared acceptance criteria.
+context. A stronger prior and larger diversity/privacy audit, external-site validation,
+and domain-expert review should occur only after reconstruction and code utilisation
+meet predeclared acceptance criteria.
 
 ## Reproducible report assets
 
@@ -738,6 +772,12 @@ The independent A100 timing evidence is stored in
 identity, source commit, and checkpoint hashes; the CSV provides the two concise rows
 used in the report.
 
+The generative evidence is stored under `report_assets/generative_evaluation/`.
+`REPORT_RESULTS.md` gives the concise interpretation; `summary.json` retains hashes,
+protocol details, and complete metrics; the CSV files retain per-sample neighbours and
+image-feature comparisons; and the two PNG files show the unconditional cohort and
+the closest training examples.
+
 ## Codebase structure
 
 - `modules.py`: ConvVAE, vector quantiser, VQ-VAE, and loss functions.
@@ -750,6 +790,8 @@ used in the report.
 - `export_code_indices.py`: train-only VQ code-grid export with split and provenance guards.
 - `train_prior.py`: patient-disjoint PixelCNN-prior training, validation, and resume support.
 - `sample_prior.py`: unconditional VQ code sampling and matching-checkpoint image decoding.
+- `evaluate_generation.py`: hash-guarded diversity, distribution-coverage, and
+  nearest-training-neighbour audit.
 - `slurm/`: Rangpur sanity, model training, frozen evaluation, prior, and sampling scripts.
 - `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 

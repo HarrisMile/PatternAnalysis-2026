@@ -29,7 +29,8 @@ test -d /home/groups/comp3710/HipMRI_Study_open/keras_slices_data && echo 'HipMR
 bash -n slurm/gpu_sanity.sh slurm/train_vae.sh slurm/train_vqvae.sh \
   slurm/evaluate_test.sh slurm/benchmark_latency.sh slurm/export_code_indices.sh \
   slurm/train_prior.sh slurm/sample_prior.sh
-python -m py_compile benchmark_latency.py export_code_indices.py train_prior.py sample_prior.py
+python -m py_compile benchmark_latency.py export_code_indices.py train_prior.py \
+  sample_prior.py evaluate_generation.py
 python train_prior.py --smoke-test
 
 ## Stage 5: Submit the short GPU sanity job on the verified comp3710 partition
@@ -148,3 +149,19 @@ rsync -ah --partial \
 rsync -ah --partial \
   s4984233@rangpur.compute.eait.uq.edu.au:/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/predictions/formal-prior-samples/ \
   recognition/hipmri-vqvae/predictions/formal-prior-samples/
+
+## Preserve the exact A100 code export separately from any earlier local CPU export
+rsync -ah --partial \
+  s4984233@rangpur.compute.eait.uq.edu.au:/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/outputs/prior-data/ \
+  recognition/hipmri-vqvae/outputs/formal-prior-data/
+
+## Run the hash-guarded diversity, coverage, and memorisation audit locally
+cd recognition/hipmri-vqvae
+conda activate 3710torch
+MPLCONFIGDIR=/tmp/hipmri-mpl-eval python evaluate_generation.py \
+  --train-codes outputs/formal-prior-data/train_code_indices.npz \
+  --train-metadata outputs/formal-prior-data/train_samples.csv \
+  --train-summary outputs/formal-prior-data/summary.json \
+  --prior-summary outputs/formal-prior/summary.json \
+  --overwrite
+cat report_assets/generative_evaluation/REPORT_RESULTS.md
