@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("predictions/formal-prior-samples/samples.npz"),
     )
     parser.add_argument(
+        "--sample-summary",
+        type=Path,
+        help="Sampling summary JSON; defaults to summary.json beside --samples.",
+    )
+    parser.add_argument(
         "--train-codes",
         type=Path,
         default=Path("outputs/prior-data/train_code_indices.npz"),
@@ -76,6 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--downsample-factor", type=positive_int, default=4)
     parser.add_argument("--panel-samples", type=positive_int, default=8)
+    parser.add_argument("--failure-cases", type=positive_int, default=5)
     parser.add_argument("--interpolation-pairs", type=positive_int, default=4)
     parser.add_argument("--interpolation-steps", type=positive_int, default=7)
     parser.add_argument(
@@ -133,9 +139,38 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
     memorisation = summary["memorisation_audit"]
     diversity = summary["diversity"]
     coverage = summary["distribution_coverage"]
-    feature_metrics = {
-        row["feature"]: row for row in coverage["image_feature_metrics"]
-    }
+    feature_metrics = {row["feature"]: row for row in coverage["image_feature_metrics"]}
+    failure_lines = [
+        "## Deterministically selected generation failures",
+        "",
+        (
+            f"The {summary['failure_autopsy']['case_count']} cases below are the largest "
+            "predefined feature-deviation scores, not visually cherry-picked examples."
+        ),
+        "",
+    ]
+    for case_number, row in enumerate(summary["failure_autopsy"]["rows"], 1):
+        failure_lines.extend(
+            [
+                (
+                    f"- Case {case_number}: seed {row['sample_seed']}, sample "
+                    f"{row['sample_index_within_seed'] + 1}; dominant deviation "
+                    f"`{row['dominant_feature']}` = {row['dominant_feature_z']:.2f} training "
+                    f"standard deviations, nearest-training SSIM "
+                    f"{row['full_resolution_ssim']:.3f}."
+                ),
+            ]
+        )
+    failure_lines.extend(
+        [
+            "",
+            (
+                "These cases require visual interpretation alongside the recorded quantitative "
+                "trigger; the score is an audit selection rule, not a clinical abnormality score."
+            ),
+            "",
+        ]
+    )
     lines = [
         "# Unconditional Generation Audit",
         "",
@@ -145,6 +180,11 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
             f"This audit compares {summary['protocol']['generated_samples']} unconditional "
             f"samples with all {summary['protocol']['training_samples']:,} training slices. "
             "Only the training split is used as the memorisation reference."
+        ),
+        (
+            f"Samples were drawn from seeds {summary['protocol']['sampling_seeds']} at "
+            f"{summary['generation_profile']['milliseconds_per_image']:.2f} ms/image on "
+            f"{summary['generation_profile']['device_name']}."
         ),
         "",
         "## Memorisation check",
@@ -212,6 +252,7 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
             "anatomy visible in the sample panel."
         ),
         "",
+        *failure_lines,
         "## Latent interpolation diagnostic",
         "",
         (
@@ -326,7 +367,9 @@ def code_statistics(indices: np.ndarray, num_embeddings: int) -> dict[str, Any]:
     counts = np.bincount(indices.reshape(-1).astype(np.int64), minlength=num_embeddings)
     probabilities = counts.astype(np.float64) / counts.sum()
     active = probabilities > 0
-    perplexity = float(np.exp(-np.sum(probabilities[active] * np.log(probabilities[active]))))
+    perplexity = float(
+        np.exp(-np.sum(probabilities[active] * np.log(probabilities[active])))
+    )
     return {
         "counts": counts,
         "probabilities": probabilities,
@@ -341,7 +384,10 @@ def jensen_shannon_divergence(left: np.ndarray, right: np.ndarray) -> float:
     def kl_divergence(distribution: np.ndarray) -> float:
         nonzero = distribution > 0
         return float(
-            np.sum(distribution[nonzero] * np.log(distribution[nonzero] / midpoint[nonzero]))
+            np.sum(
+                distribution[nonzero]
+                * np.log(distribution[nonzero] / midpoint[nonzero])
+            )
         )
 
     return 0.5 * (kl_divergence(left) + kl_divergence(right))
@@ -349,10 +395,14 @@ def jensen_shannon_divergence(left: np.ndarray, right: np.ndarray) -> float:
 
 def approximate_wasserstein(left: np.ndarray, right: np.ndarray) -> float:
     quantiles = np.linspace(0.0, 1.0, 1001)
-    return float(np.mean(np.abs(np.quantile(left, quantiles) - np.quantile(right, quantiles))))
+    return float(
+        np.mean(np.abs(np.quantile(left, quantiles) - np.quantile(right, quantiles)))
+    )
 
 
-def distribution_rows(train_features: np.ndarray, generated_features: np.ndarray) -> list[dict[str, Any]]:
+def distribution_rows(
+    train_features: np.ndarray, generated_features: np.ndarray
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for feature_index, feature_name in enumerate(FEATURE_NAMES):
         training = train_features[:, feature_index]
@@ -369,14 +419,18 @@ def distribution_rows(train_features: np.ndarray, generated_features: np.ndarray
                 "generated_mean": float(generated.mean()),
                 "generated_std": float(generated.std()),
                 "standardised_mean_difference": (
-                    float((generated.mean() - training.mean()) / train_standard_deviation)
+                    float(
+                        (generated.mean() - training.mean()) / train_standard_deviation
+                    )
                     if train_standard_deviation > 0
                     else float("nan")
                 ),
                 "generated_fraction_inside_train_p05_p95": float(
                     np.mean((generated >= lower) & (generated <= upper))
                 ),
-                "quantile_wasserstein_distance": approximate_wasserstein(training, generated),
+                "quantile_wasserstein_distance": approximate_wasserstein(
+                    training, generated
+                ),
             }
         )
     return rows
@@ -394,7 +448,9 @@ def load_training_data(
     dataset = HipMRISliceDataset(manifest_path, "train")
     metadata = read_csv(metadata_path)
     if len(metadata) != len(dataset):
-        raise ValueError("Training metadata and manifest contain different sample counts.")
+        raise ValueError(
+            "Training metadata and manifest contain different sample counts."
+        )
     for index, (metadata_row, manifest_row) in enumerate(zip(metadata, dataset.rows)):
         expected = (
             str(index),
@@ -447,7 +503,9 @@ def code_nearest_neighbours(
     mismatch_fractions = np.empty(len(generated_codes), dtype=np.float64)
     tie_counts = np.empty(len(generated_codes), dtype=np.int64)
     for sample_index, generated in enumerate(generated_codes):
-        mismatches = np.count_nonzero(training_codes != generated[None, ...], axis=(1, 2))
+        mismatches = np.count_nonzero(
+            training_codes != generated[None, ...], axis=(1, 2)
+        )
         minimum = int(mismatches.min())
         nearest_indices[sample_index] = int(np.flatnonzero(mismatches == minimum)[0])
         mismatch_fractions[sample_index] = minimum / generated.size
@@ -463,7 +521,9 @@ def pairwise_summary(images: np.ndarray, code_indices: np.ndarray) -> dict[str, 
 
     code_mismatches = np.empty((len(code_indices), len(code_indices)), dtype=np.float64)
     for index, code_grid in enumerate(code_indices):
-        code_mismatches[index] = np.mean(code_indices != code_grid[None, ...], axis=(1, 2))
+        code_mismatches[index] = np.mean(
+            code_indices != code_grid[None, ...], axis=(1, 2)
+        )
     np.fill_diagonal(code_mismatches, np.inf)
     nearest_code = code_mismatches.min(axis=1)
     upper_code = code_mismatches[np.triu_indices(len(code_indices), k=1)]
@@ -480,7 +540,9 @@ def pairwise_summary(images: np.ndarray, code_indices: np.ndarray) -> dict[str, 
         "pairwise_code_mismatch_fraction_min": float(upper_code.min()),
         "pairwise_code_mismatch_fraction_median": float(np.median(upper_code)),
         "pairwise_code_mismatch_fraction_mean": float(upper_code.mean()),
-        "nearest_generated_code_mismatch_fraction_median": float(np.median(nearest_code)),
+        "nearest_generated_code_mismatch_fraction_median": float(
+            np.median(nearest_code)
+        ),
     }
 
 
@@ -542,10 +604,19 @@ def save_neighbour_panel(
     plt.close(figure)
 
 
-def save_sample_panel(path: Path, images: np.ndarray) -> None:
-    shown = min(16, len(images))
+def save_sample_panel(
+    path: Path,
+    images: np.ndarray,
+    sample_seeds: np.ndarray,
+    sample_indices_within_seed: np.ndarray,
+) -> None:
+    ordered_seeds = list(dict.fromkeys(int(seed) for seed in sample_seeds))
+    per_seed = 16 if len(ordered_seeds) == 1 else 4
+    shown_indices = np.concatenate(
+        [np.flatnonzero(sample_seeds == seed)[:per_seed] for seed in ordered_seeds]
+    )
     columns = 4
-    rows = math.ceil(shown / columns)
+    rows = math.ceil(len(shown_indices) / columns)
     figure, axes = plt.subplots(
         rows,
         columns,
@@ -554,11 +625,64 @@ def save_sample_panel(path: Path, images: np.ndarray) -> None:
     )
     for axis_index, axis in enumerate(axes.flat):
         axis.axis("off")
-        if axis_index < shown:
-            axis.imshow(images[axis_index], cmap="gray", vmin=0.0, vmax=1.0)
-            axis.set_title(f"Random sample {axis_index + 1}", fontsize=9)
-    figure.suptitle("Unconditional VQ-VAE samples from the PixelCNN prior", fontsize=12)
+        if axis_index < len(shown_indices):
+            sample_index = int(shown_indices[axis_index])
+            axis.imshow(images[sample_index], cmap="gray", vmin=0.0, vmax=1.0)
+            axis.set_title(
+                f"seed {int(sample_seeds[sample_index])}, "
+                f"sample {int(sample_indices_within_seed[sample_index]) + 1}",
+                fontsize=9,
+            )
+    figure.suptitle("Uncurated unconditional VQ-VAE samples across seeds", fontsize=12)
     figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.985))
+    figure.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def save_failure_panel(
+    path: Path,
+    generated_images: np.ndarray,
+    nearest_training_images: np.ndarray,
+    failure_indices: np.ndarray,
+    failure_rows: list[dict[str, Any]],
+) -> None:
+    figure, axes = plt.subplots(
+        len(failure_indices),
+        3,
+        figsize=(10.5, 3.0 * len(failure_indices)),
+        squeeze=False,
+    )
+    for row_index, (sample_index, row) in enumerate(zip(failure_indices, failure_rows)):
+        generated = generated_images[int(sample_index)]
+        neighbour = nearest_training_images[int(sample_index)]
+        difference = np.abs(generated - neighbour)
+        axes[row_index, 0].imshow(generated, cmap="gray", vmin=0.0, vmax=1.0)
+        axes[row_index, 0].set_title(
+            f"Case {row_index + 1}: seed {row['sample_seed']}, "
+            f"sample {row['sample_index_within_seed'] + 1}\n"
+            f"{row['dominant_feature']} z={row['dominant_feature_z']:.2f}",
+            fontsize=9,
+        )
+        axes[row_index, 1].imshow(neighbour, cmap="gray", vmin=0.0, vmax=1.0)
+        axes[row_index, 1].set_title(
+            f"Nearest training slice\npatient {row['pixel_nn_subject_id']}, "
+            f"week {row['pixel_nn_week']}, slice {row['pixel_nn_slice_index']}",
+            fontsize=9,
+        )
+        axes[row_index, 2].imshow(difference, cmap="magma", vmin=0.0, vmax=1.0)
+        axes[row_index, 2].set_title(
+            f"Absolute error\nMSE={row['full_resolution_mse']:.4f}, "
+            f"SSIM={row['full_resolution_ssim']:.3f}",
+            fontsize=9,
+        )
+        for axis in axes[row_index]:
+            axis.axis("off")
+    figure.suptitle(
+        f"{len(failure_indices)} deterministic VQ-VAE generation failures "
+        "by feature-deviation score",
+        fontsize=12,
+    )
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.992))
     figure.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
@@ -569,7 +693,9 @@ def fixed_rank_indices(values: np.ndarray, count: int) -> tuple[np.ndarray, np.n
     if values.ndim != 1 or len(values) == 0:
         raise ValueError("Rank selection requires a non-empty one-dimensional array.")
     if count > len(values):
-        raise ValueError("--interpolation-pairs cannot exceed the generated sample count.")
+        raise ValueError(
+            "--interpolation-pairs cannot exceed the generated sample count."
+        )
     rank_positions = np.rint(np.linspace(0, len(values) - 1, count)).astype(np.int64)
     selected = np.argsort(values, kind="stable")[rank_positions]
     quantiles = rank_positions.astype(np.float64) / max(len(values) - 1, 1)
@@ -617,7 +743,9 @@ def latent_interpolation(
     generated_selected = torch.from_numpy(
         generated_codes[selected].astype(np.int64, copy=False)
     ).to(device)
-    training_selected_indices = pixel_nearest_indices[selected].astype(np.int64, copy=False)
+    training_selected_indices = pixel_nearest_indices[selected].astype(
+        np.int64, copy=False
+    )
     training_selected = torch.from_numpy(
         training_codes[training_selected_indices].astype(np.int64, copy=False)
     ).to(device)
@@ -627,10 +755,12 @@ def latent_interpolation(
         training_embeddings = model.quantizer.embedding(training_selected)
         generated_embeddings = model.quantizer.embedding(generated_selected)
         interpolated_embeddings = (
-            (1.0 - alphas[None, :, None, None, None])
-            * training_embeddings[:, None]
-            + alphas[None, :, None, None, None] * generated_embeddings[:, None]
-        )
+            1.0 - alphas[None, :, None, None, None]
+        ) * training_embeddings[:, None] + alphas[
+            None, :, None, None, None
+        ] * generated_embeddings[
+            :, None
+        ]
         flat_embeddings = interpolated_embeddings.reshape(
             pair_count * steps,
             *interpolated_embeddings.shape[2:],
@@ -650,7 +780,9 @@ def latent_interpolation(
     adjacent_left = torch.from_numpy(decoded_numpy[:, :-1, None]).reshape(
         pair_count * (steps - 1), 1, decoded.shape[-2], decoded.shape[-1]
     )
-    adjacent_right = torch.from_numpy(decoded_numpy[:, 1:, None]).reshape_as(adjacent_left)
+    adjacent_right = torch.from_numpy(decoded_numpy[:, 1:, None]).reshape_as(
+        adjacent_left
+    )
     adjacent_metrics = reconstruction_metrics(adjacent_left, adjacent_right)
     adjacent_mse = adjacent_metrics["mse"].reshape(pair_count, steps - 1).numpy()
     adjacent_ssim = adjacent_metrics["ssim"].reshape(pair_count, steps - 1).numpy()
@@ -678,14 +810,20 @@ def latent_interpolation(
                 "training_subject_id": metadata_row["subject_id"],
                 "training_week": int(metadata_row["week"]),
                 "training_slice_index": int(metadata_row["slice_index"]),
-                "nearest_training_full_resolution_mse": float(nearest_mse[sample_index]),
+                "nearest_training_full_resolution_mse": float(
+                    nearest_mse[sample_index]
+                ),
                 "endpoint_code_mismatch_fraction": float(
-                    np.mean(generated_codes[sample_index] != training_codes[train_index])
+                    np.mean(
+                        generated_codes[sample_index] != training_codes[train_index]
+                    )
                 ),
                 "training_image_to_code_decode_ssim": float(
                     training_endpoint_metrics["ssim"][row_index]
                 ),
-                "interpolation_endpoint_ssim": float(endpoint_metrics["ssim"][row_index]),
+                "interpolation_endpoint_ssim": float(
+                    endpoint_metrics["ssim"][row_index]
+                ),
                 "generated_endpoint_max_abs_error": float(
                     generated_endpoint_errors[row_index].max()
                 ),
@@ -758,6 +896,11 @@ def save_interpolation_panel(
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     samples_path = args.samples.resolve()
+    sample_summary_path = (
+        args.sample_summary.resolve()
+        if args.sample_summary is not None
+        else (samples_path.parent / "summary.json").resolve()
+    )
     train_codes_path = args.train_codes.resolve()
     metadata_path = args.train_metadata.resolve()
     train_summary_path = args.train_summary.resolve()
@@ -767,6 +910,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     output = args.output.resolve()
     for path in (
         samples_path,
+        sample_summary_path,
         train_codes_path,
         metadata_path,
         train_summary_path,
@@ -780,6 +924,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
     device = select_device(args.device)
 
+    sample_summary = read_json(sample_summary_path)
     train_summary = read_json(train_summary_path)
     prior_summary = read_json(prior_summary_path)
     train_codes_sha256 = sha256_file(train_codes_path)
@@ -793,14 +938,17 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "The training code archive does not match the archive used to fit the formal prior: "
             f"expected {expected_train_codes_sha256}, received {train_codes_sha256}."
         )
-    if (
-        prior_summary.get("provenance", {}).get("source_vqvae_sha256")
-        != train_summary.get("checkpoint", {}).get("sha256")
-    ):
-        raise ValueError("The prior and code-export summaries refer to different VQ-VAE checkpoints.")
+    if prior_summary.get("provenance", {}).get(
+        "source_vqvae_sha256"
+    ) != train_summary.get("checkpoint", {}).get("sha256"):
+        raise ValueError(
+            "The prior and code-export summaries refer to different VQ-VAE checkpoints."
+        )
     expected_vqvae_sha256 = str(train_summary.get("checkpoint", {}).get("sha256", ""))
     if not expected_vqvae_sha256:
-        raise ValueError("The training-code summary has no source VQ-VAE checkpoint hash.")
+        raise ValueError(
+            "The training-code summary has no source VQ-VAE checkpoint hash."
+        )
     vqvae, vqvae_checkpoint, vqvae_sha256 = load_vqvae_decoder(
         vqvae_checkpoint_path,
         expected_vqvae_sha256,
@@ -811,6 +959,18 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         generated_images = validate_images(archive["images"], "generated images")
         generated_codes = np.asarray(archive["code_indices"], dtype=np.uint16)
         sample_ids = np.asarray(archive["sample_id"], dtype=np.int64)
+        sample_seeds = (
+            np.asarray(archive["sample_seed"], dtype=np.int64)
+            if "sample_seed" in archive.files
+            else np.full(
+                len(sample_ids), int(sample_summary.get("seed", -1)), dtype=np.int64
+            )
+        )
+        sample_indices_within_seed = (
+            np.asarray(archive["sample_index_within_seed"], dtype=np.int64)
+            if "sample_index_within_seed" in archive.files
+            else sample_ids.copy()
+        )
     with np.load(train_codes_path) as archive:
         if "indices" not in archive.files:
             raise ValueError("Training code archive has no 'indices' array.")
@@ -822,10 +982,30 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("Code-index arrays must have shape [N, H, W].")
     if generated_codes.shape[1:] != training_codes.shape[1:]:
         raise ValueError("Generated and training code grids have different shapes.")
-    if len(generated_images) != len(generated_codes) or len(sample_ids) != len(generated_images):
+    if not (
+        len(generated_images)
+        == len(generated_codes)
+        == len(sample_ids)
+        == len(sample_seeds)
+        == len(sample_indices_within_seed)
+    ):
         raise ValueError("Generated images, code grids, and sample IDs are misaligned.")
     if not np.array_equal(sample_ids, np.arange(len(sample_ids))):
         raise ValueError("Generated sample IDs are not contiguous and deterministic.")
+    if int(sample_summary.get("num_samples", -1)) != len(generated_images):
+        raise ValueError(
+            "The sampling summary and sample archive have different sample counts."
+        )
+    if (
+        sample_summary.get("vqvae_checkpoint", {}).get("sha256")
+        and sample_summary["vqvae_checkpoint"]["sha256"] != vqvae_sha256
+    ):
+        raise ValueError(
+            "The sampling summary refers to a different VQ-VAE checkpoint."
+        )
+    generation_profile = sample_summary.get("generation_profile")
+    if not isinstance(generation_profile, dict):
+        raise ValueError("The sampling summary has no measured generation profile.")
 
     dataset, training_features, training_downsampled, metadata = load_training_data(
         manifest_path,
@@ -835,7 +1015,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         args.downsample_factor,
     )
     if len(training_codes) != len(dataset):
-        raise ValueError("Training code archive and manifest contain different sample counts.")
+        raise ValueError(
+            "Training code archive and manifest contain different sample counts."
+        )
     if int(train_summary.get("sample_count", -1)) != len(dataset):
         raise ValueError("Training code summary has an unexpected sample count.")
     metadata_subject_ids = np.asarray([row["subject_id"] for row in metadata])
@@ -848,13 +1030,19 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         and np.array_equal(archive_weeks, metadata_weeks)
         and np.array_equal(archive_slice_indices, metadata_slice_indices)
     ):
-        raise ValueError("Training code archive metadata does not match train_samples.csv.")
+        raise ValueError(
+            "Training code archive metadata does not match train_samples.csv."
+        )
 
     generated_features = image_features(generated_images)
     generated_downsampled = downsample(generated_images, args.downsample_factor)
-    pixel_distances = squared_distance_matrix(training_downsampled, generated_downsampled)
+    pixel_distances = squared_distance_matrix(
+        training_downsampled, generated_downsampled
+    )
     pixel_nearest_indices = pixel_distances.argmin(axis=0)
-    pixel_nearest_mse = pixel_distances[pixel_nearest_indices, np.arange(len(generated_images))]
+    pixel_nearest_mse = pixel_distances[
+        pixel_nearest_indices, np.arange(len(generated_images))
+    ]
     code_indices, code_mismatch, code_ties = code_nearest_neighbours(
         generated_codes,
         training_codes,
@@ -878,6 +1066,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         audit_rows.append(
             {
                 "sample_id": int(sample_id),
+                "sample_seed": int(sample_seeds[sample_index]),
+                "sample_index_within_seed": int(
+                    sample_indices_within_seed[sample_index]
+                ),
                 "pixel_nn_train_index": pixel_index,
                 "pixel_nn_subject_id": pixel_row["subject_id"],
                 "pixel_nn_week": int(pixel_row["week"]),
@@ -893,12 +1085,35 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 "code_nn_slice_index": int(code_row["slice_index"]),
                 "code_nn_mismatch_fraction": float(code_mismatch[sample_index]),
                 "code_nn_tie_count": int(code_ties[sample_index]),
-                "exact_pixel_match": bool(full_metrics_numpy["mse"][sample_index] <= 1e-12),
+                "exact_pixel_match": bool(
+                    full_metrics_numpy["mse"][sample_index] <= 1e-12
+                ),
                 "exact_code_grid_match": bool(code_mismatch[sample_index] == 0.0),
             }
         )
 
     distribution = distribution_rows(training_features, generated_features)
+    training_feature_mean = training_features.mean(axis=0)
+    training_feature_std = training_features.std(axis=0)
+    safe_feature_std = np.where(training_feature_std > 0, training_feature_std, 1.0)
+    feature_z_scores = (generated_features - training_feature_mean) / safe_feature_std
+    failure_scores = np.max(np.abs(feature_z_scores), axis=1)
+    failure_count = min(args.failure_cases, len(generated_images))
+    failure_indices = np.argsort(-failure_scores, kind="stable")[:failure_count]
+    failure_rows: list[dict[str, Any]] = []
+    for sample_index in failure_indices:
+        dominant_index = int(np.argmax(np.abs(feature_z_scores[sample_index])))
+        row = {
+            **audit_rows[int(sample_index)],
+            "failure_score": float(failure_scores[sample_index]),
+            "dominant_feature": FEATURE_NAMES[dominant_index],
+            "dominant_feature_z": float(feature_z_scores[sample_index, dominant_index]),
+        }
+        for feature_index, feature_name in enumerate(FEATURE_NAMES):
+            row[f"{feature_name}_z"] = float(
+                feature_z_scores[sample_index, feature_index]
+            )
+        failure_rows.append(row)
     train_code_statistics = code_statistics(training_codes, 512)
     generated_code_statistics = code_statistics(generated_codes, 512)
     train_active = train_code_statistics["counts"] > 0
@@ -910,9 +1125,12 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     sample_panel = output / "unconditional_samples.png"
     interpolation_csv = output / "latent_interpolation_metrics.csv"
     interpolation_panel = output / "latent_interpolation.png"
+    failure_csv = output / "generation_failure_cases.csv"
+    failure_panel = output / "generation_failure_cases.png"
     report_path = output / "REPORT_RESULTS.md"
     write_csv(neighbour_csv, audit_rows)
     write_csv(distribution_csv, distribution)
+    write_csv(failure_csv, failure_rows)
     save_neighbour_panel(
         neighbour_panel,
         generated_images,
@@ -920,22 +1138,36 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         audit_rows,
         args.panel_samples,
     )
-    save_sample_panel(sample_panel, generated_images)
+    save_sample_panel(
+        sample_panel,
+        generated_images,
+        sample_seeds,
+        sample_indices_within_seed,
+    )
+    save_failure_panel(
+        failure_panel,
+        generated_images,
+        nearest_training_images,
+        failure_indices,
+        failure_rows,
+    )
 
     nearest_mse = np.asarray([row["full_resolution_mse"] for row in audit_rows])
     nearest_ssim = np.asarray([row["full_resolution_ssim"] for row in audit_rows])
-    interpolated_images, interpolation_rows, interpolation_sample_indices = latent_interpolation(
-        vqvae,
-        generated_codes,
-        training_codes,
-        generated_images,
-        nearest_training_images,
-        pixel_nearest_indices,
-        metadata,
-        nearest_mse,
-        args.interpolation_pairs,
-        args.interpolation_steps,
-        device,
+    interpolated_images, interpolation_rows, interpolation_sample_indices = (
+        latent_interpolation(
+            vqvae,
+            generated_codes,
+            training_codes,
+            generated_images,
+            nearest_training_images,
+            pixel_nearest_indices,
+            metadata,
+            nearest_mse,
+            args.interpolation_pairs,
+            args.interpolation_steps,
+            device,
+        )
     )
     write_csv(interpolation_csv, interpolation_rows)
     save_interpolation_panel(
@@ -950,11 +1182,16 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         [row["adjacent_ssim_min"] for row in interpolation_rows], dtype=np.float64
     )
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "protocol": {
             "reference_split": "train",
             "generated_samples": int(len(generated_images)),
+            "sampling_seeds": list(dict.fromkeys(int(seed) for seed in sample_seeds)),
+            "samples_per_seed": {
+                str(seed): int(np.count_nonzero(sample_seeds == seed))
+                for seed in dict.fromkeys(int(value) for value in sample_seeds)
+            },
             "training_samples": int(len(dataset)),
             "patient_disjoint_manifest_retained": True,
             "formal_prior_data_hash_verified": True,
@@ -971,6 +1208,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         },
         "inputs": {
             "samples": {"path": str(samples_path), "sha256": sha256_file(samples_path)},
+            "sample_summary": {
+                "path": str(sample_summary_path),
+                "sha256": sha256_file(sample_summary_path),
+            },
             "train_codes": {
                 "path": str(train_codes_path),
                 "sha256": train_codes_sha256,
@@ -993,18 +1234,38 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 "epoch": int(vqvae_checkpoint["epoch"]),
                 "best_epoch": int(vqvae_checkpoint["best_epoch"]),
             },
-            "manifest": {"path": str(manifest_path), "sha256": sha256_file(manifest_path)},
+            "manifest": {
+                "path": str(manifest_path),
+                "sha256": sha256_file(manifest_path),
+            },
+        },
+        "generation_profile": {
+            "seconds": float(generation_profile["seconds"]),
+            "milliseconds_per_image": float(
+                generation_profile["milliseconds_per_image"]
+            ),
+            "images_per_second": float(generation_profile["images_per_second"]),
+            "peak_accelerator_memory_mb": generation_profile.get(
+                "peak_accelerator_memory_mb"
+            ),
+            "device_name": str(sample_summary.get("device", {}).get("name", "unknown")),
         },
         "memorisation_audit": {
-            "exact_pixel_matches": int(sum(row["exact_pixel_match"] for row in audit_rows)),
+            "exact_pixel_matches": int(
+                sum(row["exact_pixel_match"] for row in audit_rows)
+            ),
             "exact_code_grid_matches": int(
                 sum(row["exact_code_grid_match"] for row in audit_rows)
             ),
             "nearest_training_full_resolution_mse_min": float(nearest_mse.min()),
-            "nearest_training_full_resolution_mse_median": float(np.median(nearest_mse)),
+            "nearest_training_full_resolution_mse_median": float(
+                np.median(nearest_mse)
+            ),
             "nearest_training_full_resolution_mse_max": float(nearest_mse.max()),
             "nearest_training_full_resolution_ssim_min": float(nearest_ssim.min()),
-            "nearest_training_full_resolution_ssim_median": float(np.median(nearest_ssim)),
+            "nearest_training_full_resolution_ssim_median": float(
+                np.median(nearest_ssim)
+            ),
             "nearest_training_full_resolution_ssim_max": float(nearest_ssim.max()),
             "nearest_training_code_mismatch_fraction_min": float(code_mismatch.min()),
             "nearest_training_code_mismatch_fraction_median": float(
@@ -1027,6 +1288,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "image_feature_metrics": distribution,
         },
+        "failure_autopsy": {
+            "case_count": len(failure_rows),
+            "selection_rule": (
+                "Largest maximum absolute standardised deviation across seven predefined "
+                "image features; stable sample-ID tie break; no visual selection"
+            ),
+            "rows": failure_rows,
+        },
         "latent_interpolation": {
             "pair_count": int(len(interpolation_rows)),
             "steps": int(args.interpolation_steps),
@@ -1039,10 +1308,15 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "selection_rule": (
                 "Evenly spaced ranks across generated-sample nearest-training full-resolution MSE"
             ),
-            "selected_generated_sample_ids": interpolation_sample_indices.astype(int).tolist(),
+            "selected_generated_sample_ids": interpolation_sample_indices.astype(
+                int
+            ).tolist(),
             "intermediate_embeddings_requantised": False,
             "generated_endpoint_max_abs_error": float(
-                max(row["generated_endpoint_max_abs_error"] for row in interpolation_rows)
+                max(
+                    row["generated_endpoint_max_abs_error"]
+                    for row in interpolation_rows
+                )
             ),
             "adjacent_ssim_mean_median": float(np.median(adjacent_ssim_means)),
             "adjacent_ssim_min": float(adjacent_ssim_minima.min()),
@@ -1051,7 +1325,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "limitations": [
             "Pixel-space nearest-neighbour search is sensitive to padding and intensity alignment.",
             "No exact or close neighbour is evidence against direct copying, not a privacy guarantee.",
-            "Thirty-two samples support an initial audit but not clinical validation.",
+            (
+                f"{len(generated_images)} samples across {len(set(sample_seeds.tolist()))} "
+                "seeds support an engineering audit but not clinical validation."
+            ),
             (
                 "Linear embedding interpolation probes decoder continuity but intermediate "
                 "latents can lie outside the discrete codebook support."
@@ -1064,6 +1341,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "unconditional_sample_panel": sample_panel.name,
             "latent_interpolation_metrics": interpolation_csv.name,
             "latent_interpolation_panel": interpolation_panel.name,
+            "generation_failure_cases": failure_csv.name,
+            "generation_failure_panel": failure_panel.name,
             "text_report": report_path.name,
         },
     }
