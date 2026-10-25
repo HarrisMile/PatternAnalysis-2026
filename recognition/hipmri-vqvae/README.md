@@ -1,4 +1,4 @@
-# HipMRI 2D Reconstruction with VAE and VQ-VAE
+# HipMRI 2D Reconstruction and Unconditional Generation with ConvVAE and VQ-VAE
 
 **Student ID:** 49842339
 
@@ -25,7 +25,12 @@ low-quality negative result, not evidence of clinically realistic synthetic MRI.
 
 ## Research question
 
-Under the same patient-level data split, preprocessing, training budget, and evaluation protocol, does a VQ-VAE provide a better reconstruction-quality and representation-efficiency trade-off than a continuous-latent convolutional VAE on 2D HipMRI slices?
+Under the same patient-level data split, preprocessing, training budget, and evaluation
+protocol, does a VQ-VAE provide a better reconstruction-quality and
+representation-efficiency trade-off than a continuous-latent convolutional VAE on 2D
+HipMRI slices? As a secondary hard-route question, can an autoregressive prior over the
+frozen VQ codes generate a diverse cohort without direct training-set memorisation and
+with image statistics consistent with the training distribution?
 
 ## Engineering dilemma and scope
 
@@ -455,15 +460,8 @@ python evaluate_generation.py \
   --overwrite
 ```
 
-No exact pixel match, exact VQ code-grid match, or duplicate generated sample was
-found. Median nearest-training SSIM is `0.258`, and the median nearest-training code
-mismatch fraction is `0.657`. The samples cover 14/15 training-active codes, with
-code-frequency Jensen-Shannon divergence `0.0404` nats. Image-space coverage is much
-weaker: near-zero area is `2.39` training standard deviations too high, tissue area is
-`1.24` standard deviations too low, and vertical centre of mass is shifted by `4.66`
-standard deviations. These measurements support the visual finding of large black
-bands and fragmented anatomy. The audit is evidence against exact copying, not a
-formal privacy guarantee or clinical validation.
+The formal results, sample panel, distribution checks, and nearest-neighbour evidence
+are reported together below.
 
 ## Rangpur execution
 
@@ -689,6 +687,52 @@ also contain an isolated unusual-appearance component, but no clinical or causal
 is made. The masks were used only to contextualise error locations, not as model input
 or evidence that a reconstruction is medically acceptable.
 
+## Unconditional generation and memorisation audit
+
+The learned prior was trained only on frozen VQ indices from the original training
+cohort. Twenty-five training patients (9,540 slices) updated the prior, while six
+different training-cohort patients (1,920 slices) selected the checkpoint. Official
+validation patients 036–039 and test patients 040–042 were excluded from both subsets.
+The initial 40-epoch job and its 40-to-80 continuation took 131.7 seconds of measured
+training time in total. Validation selected epoch 73.
+
+| Evidence | Formal result |
+| --- | ---: |
+| Prior validation NLL / perplexity | 0.897663 / 2.453863 |
+| Unconditional samples | 32 |
+| Generated coverage of training-active codes | 14/15 (93.3%) |
+| Code-frequency Jensen-Shannon divergence | 0.0404 nats |
+| Exact generated-image / code-grid duplicates | 0 / 0 |
+| Exact training pixel / code-grid matches | 0 / 0 |
+| Median nearest-training SSIM | 0.258 |
+| Median nearest-training code mismatch | 65.7% |
+
+![Sixteen unconditional VQ-VAE samples decoded from PixelCNN code grids](report_assets/generative_evaluation/unconditional_samples.png)
+
+*Figure 6. First 16 of 32 deterministic-seed unconditional samples from the validation-selected PixelCNN prior.*
+
+The samples are numerically diverse and their aggregate code frequencies are close to
+the training export, but this does not imply realistic anatomy. Several images contain
+large internal black bands, disconnected tissue blocks, and abrupt vertical shifts.
+The near-zero area is `2.39` training standard deviations above the training mean,
+tissue area is `1.24` standard deviations below it, and vertical centre of mass is
+shifted by `4.66` standard deviations. Only 18.75% of generated near-zero fractions
+and 21.88% of vertical centres fall inside the corresponding training 5th–95th
+percentile interval.
+
+![Generated samples beside their closest training slices and absolute errors](report_assets/generative_evaluation/nearest_training_neighbours.png)
+
+*Figure 7. The eight generated samples with the lowest full-resolution MSE to their nearest training slice, after a deterministic pooled-pixel search over all 11,460 training slices.*
+
+Even these most similar pairs retain low SSIM and substantial anatomical differences.
+Across all 32 samples, nearest-training SSIM ranges from `0.206` to `0.330`, while the
+nearest code grid still differs at 51.6%–80.7% of positions. No exact copy of a
+training image or training code grid was detected. This is evidence against direct
+memorisation under the stated pixel and code-grid checks; it is not a privacy guarantee.
+Together, Figures 6–7 show that the pipeline achieves unconditional generation without
+simple copying, but fails to produce a distributionally or anatomically convincing
+synthetic cohort.
+
 ## Limitations and threats to validity
 
 - **Small and imbalanced held-out cohort:** the test split has only three patients,
@@ -805,19 +849,21 @@ the closest training examples.
   `train.py`, `predict.py`, and the analysis scripts are project-specific implementations
   built with public library APIs. Both reported checkpoints were trained from scratch
   in this project; their SHA-256 hashes are recorded above.
-- **Conceptual sources:** the continuous VAE, VQ-VAE discrete bottleneck, and SSIM metric
-  follow the cited papers. These are conceptual/method references, not declarations
-  that source code was copied from the authors' repositories.
+- **Conceptual sources:** the continuous VAE, VQ-VAE discrete bottleneck, PixelCNN
+  autoregressive prior, and SSIM metric follow the cited papers. These are
+  conceptual/method references, not declarations that source code was copied from the
+  authors' repositories.
 - **Software dependencies:** [PyTorch](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html)
   provides tensor operations, automatic
   differentiation, neural-network layers, optimisation, and CUDA execution; NumPy
   supports numerical analysis; NiBabel reads NIfTI files; Matplotlib creates figures.
   The direct dependencies and version ranges are declared in `requirements.txt`.
-- **Compute and evidence:** formal training, test evaluation, and latency measurement
-  ran on UQ Rangpur A100 nodes. `make_report_assets.py` generates the tracked figures
-  and tables from frozen artifacts, while `provenance.json` and the latency JSON retain
-  job IDs, selection rules, hashes, device metadata, and source commit information.
-  Dataset files, per-slice raw outputs, and checkpoints are intentionally not tracked.
+- **Compute and evidence:** formal reconstruction training, prior training, random
+  sampling, test evaluation, and latency measurement ran on UQ Rangpur A100 nodes.
+  `make_report_assets.py` and `evaluate_generation.py` generate the tracked figures and
+  tables from frozen artifacts, while the JSON evidence retains job context, selection
+  rules, hashes, device metadata, and source information. Dataset files, per-slice raw
+  outputs, generated arrays, and checkpoints are intentionally not tracked.
 
 ## Artificial Intelligence Usage Disclosure
 
@@ -825,9 +871,10 @@ OpenAI Codex was used as an AI-assisted development and documentation tool durin
 this project. It assisted with interpreting the assessment requirements, planning the
 controlled ConvVAE-VQ-VAE comparison, drafting and refactoring portions of the
 data-loading, model, training, evaluation, Slurm, benchmarking, and report-generation
-code, suggesting debugging steps from error logs, and improving the structure and
-wording of the README report. It did not provide the course dataset, pretrained
-weights, or a third-party model implementation.
+code, developing the PixelCNN-prior and generation-audit pipeline, suggesting debugging
+steps from error logs, and improving the structure and wording of the README report. It
+did not provide the course dataset, pretrained weights, or a third-party model
+implementation.
 
 I retained responsibility for the project decisions and final claims. I selected the
 HipMRI VQ-VAE route, approved the experimental scope and acceptance criteria, executed
@@ -847,9 +894,12 @@ AI-assisted code and claims were verified through the following project evidence
 - validation-only checkpoint selection followed by a guarded one-time evaluation of
   the frozen test set;
 - SHA-256 verification of the reported checkpoints;
-- repeated frozen-model latency measurements using a documented timing protocol; and
+- repeated frozen-model latency measurements using a documented timing protocol;
+- validation-selected 80-epoch prior training, deterministic-seed sampling, exact
+  source-archive hash checks, and a full 11,460-slice nearest-neighbour audit; and
 - direct inspection of saved metrics, training curves, codebook statistics, matched
-  reconstructions, and failure cases before including numerical claims in the report.
+  reconstructions, unconditional samples, nearest neighbours, and failure cases before
+  including numerical claims in the report.
 
 The Git commit history preserves the progressive implementation, debugging,
 experimental, and documentation stages. AI-generated wording and code were not
@@ -872,3 +922,7 @@ correctness of the submitted code, analysis, and conclusions.
    [Official proceedings](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html).
 5. The University of Queensland, “COMP3710/7710 Pattern Recognition Final Report
    Specification,” draft v2.2, 2026. Internal course material.
+6. A. van den Oord, N. Kalchbrenner, L. Espeholt, K. Kavukcuoglu, O. Vinyals, and
+   A. Graves, “Conditional Image Generation with PixelCNN Decoders,” *Advances in
+   Neural Information Processing Systems 29*, 2016.
+   [Official proceedings](https://proceedings.neurips.cc/paper_files/paper/2016/hash/b1301141feffabac455e1f90a7de2054-Abstract.html).
