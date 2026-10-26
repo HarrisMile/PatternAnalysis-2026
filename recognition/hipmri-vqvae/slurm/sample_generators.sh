@@ -29,9 +29,9 @@ export PYTHONUNBUFFERED=1
 test -f "$PRIOR_CHECKPOINT"
 test -f "$VQVAE_CHECKPOINT"
 test -f "$VAE_CHECKPOINT"
-test -f outputs/formal-prior-data/train_code_indices.npz
-test -f outputs/formal-prior-data/train_samples.csv
-test -f outputs/formal-prior-data/summary.json
+test -f outputs/prior-data/train_code_indices.npz
+test -f outputs/prior-data/train_samples.csv
+test -f outputs/prior-data/summary.json
 test -f data/manifest.csv
 test ! -e "$VQ_SAMPLE_DIR"
 test ! -e "$VAE_SAMPLE_DIR"
@@ -64,9 +64,9 @@ python sample_vae.py \
 python evaluate_generation.py \
   --samples "$VQ_SAMPLE_DIR/samples.npz" \
   --sample-summary "$VQ_SAMPLE_DIR/summary.json" \
-  --train-codes outputs/formal-prior-data/train_code_indices.npz \
-  --train-metadata outputs/formal-prior-data/train_samples.csv \
-  --train-summary outputs/formal-prior-data/summary.json \
+  --train-codes outputs/prior-data/train_code_indices.npz \
+  --train-metadata outputs/prior-data/train_samples.csv \
+  --train-summary outputs/prior-data/summary.json \
   --prior-summary outputs/formal-prior/summary.json \
   --vqvae-checkpoint "$VQVAE_CHECKPOINT" \
   --manifest data/manifest.csv \
@@ -84,7 +84,7 @@ python compare_generators.py \
   --vq-samples "$VQ_SAMPLE_DIR/samples.npz" \
   --vq-summary "$VQ_SAMPLE_DIR/summary.json" \
   --manifest data/manifest.csv \
-  --train-metadata outputs/formal-prior-data/train_samples.csv \
+  --train-metadata outputs/prior-data/train_samples.csv \
   --output "$COMPARISON_DIR" \
   --batch-size 64 \
   --num-workers 4
