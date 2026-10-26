@@ -38,6 +38,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=positive_int, default=16)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--vae-beta", type=float, default=1e-4)
+    parser.add_argument("--vq-num-embeddings", type=positive_int, default=512)
+    parser.add_argument("--vq-embedding-dim", type=positive_int, default=64)
+    parser.add_argument("--vq-commitment-cost", type=float, default=0.25)
+    parser.add_argument(
+        "--vq-codebook-update",
+        choices=("gradient", "ema"),
+        default="gradient",
+    )
+    parser.add_argument("--vq-ema-decay", type=float, default=0.99)
+    parser.add_argument("--vq-ema-epsilon", type=float, default=1e-5)
+    parser.add_argument("--vq-dead-code-patience", type=int, default=0)
+    parser.add_argument("--vq-ssim-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--checkpoint-metric",
+        choices=("loss", "ssim"),
+        default="loss",
+    )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=3710)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
@@ -74,12 +91,76 @@ def describe_device(device: torch.device) -> str:
     return platform.processor() or platform.machine() or "CPU"
 
 
-def build_model(model_name: str) -> torch.nn.Module:
+def build_model(
+    model_name: str,
+    *,
+    vq_num_embeddings: int = 512,
+    vq_embedding_dim: int = 64,
+    vq_commitment_cost: float = 0.25,
+    vq_codebook_update: str = "gradient",
+    vq_ema_decay: float = 0.99,
+    vq_ema_epsilon: float = 1e-5,
+    vq_dead_code_patience: int = 0,
+) -> torch.nn.Module:
+    """Build a reconstruction model while preserving the formal-run defaults."""
+
     if model_name == "vae":
         return ConvVAE()
     if model_name == "vqvae":
-        return VQVAE()
+        return VQVAE(
+            embedding_dim=vq_embedding_dim,
+            num_embeddings=vq_num_embeddings,
+            commitment_cost=vq_commitment_cost,
+            codebook_update=vq_codebook_update,
+            ema_decay=vq_ema_decay,
+            ema_epsilon=vq_ema_epsilon,
+            dead_code_patience=vq_dead_code_patience,
+        )
     raise ValueError(f"Unknown model: {model_name}")
+
+
+def model_config_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    """Return the architecture values that must match when resuming."""
+
+    return {
+        "vq_num_embeddings": args.vq_num_embeddings,
+        "vq_embedding_dim": args.vq_embedding_dim,
+        "vq_commitment_cost": args.vq_commitment_cost,
+        "vq_codebook_update": args.vq_codebook_update,
+        "vq_ema_decay": args.vq_ema_decay,
+        "vq_ema_epsilon": args.vq_ema_epsilon,
+        "vq_dead_code_patience": args.vq_dead_code_patience,
+    }
+
+
+def model_config_from_checkpoint(checkpoint: Dict[str, Any]) -> Dict[str, Any]:
+    """Recover VQ architecture values, including from legacy checkpoints."""
+
+    explicit = checkpoint.get("model_config", {})
+    legacy = checkpoint.get("config", {})
+    defaults: Dict[str, Any] = {
+        "vq_num_embeddings": 512,
+        "vq_embedding_dim": 64,
+        "vq_commitment_cost": 0.25,
+        "vq_codebook_update": "gradient",
+        "vq_ema_decay": 0.99,
+        "vq_ema_epsilon": 1e-5,
+        "vq_dead_code_patience": 0,
+    }
+    return {
+        key: explicit.get(key, legacy.get(key, default))
+        for key, default in defaults.items()
+    }
+
+
+def build_model_from_checkpoint(checkpoint: Dict[str, Any]) -> torch.nn.Module:
+    """Construct the exact architecture recorded in a checkpoint."""
+
+    model_name = str(checkpoint["model_name"])
+    return build_model(
+        model_name,
+        **model_config_from_checkpoint(checkpoint),
+    )
 
 
 def compute_loss(
@@ -87,10 +168,11 @@ def compute_loss(
     outputs: Dict[str, Tensor],
     images: Tensor,
     vae_beta: float = 1e-4,
+    vq_ssim_weight: float = 0.0,
 ) -> Dict[str, Tensor]:
     if model_name == "vae":
         return vae_loss(outputs, images, beta=vae_beta)
-    return vqvae_loss(outputs, images)
+    return vqvae_loss(outputs, images, ssim_weight=vq_ssim_weight)
 
 
 def configure_reproducibility(seed: int) -> None:
@@ -148,6 +230,7 @@ def run_epoch(
     model_name: str,
     device: torch.device,
     vae_beta: float,
+    vq_ssim_weight: float = 0.0,
     optimizer: Optional[torch.optim.Optimizer] = None,
     max_batches: Optional[int] = None,
     include_reconstruction_metrics: bool = False,
@@ -157,6 +240,7 @@ def run_epoch(
     sums: Dict[str, float] = {
         "loss": 0.0,
         "reconstruction_loss": 0.0,
+        "structural_loss": 0.0,
         "regularisation_loss": 0.0,
     }
     if include_reconstruction_metrics:
@@ -174,7 +258,13 @@ def run_epoch(
 
         with torch.set_grad_enabled(training):
             outputs = model(images)
-            losses = compute_loss(model_name, outputs, images, vae_beta)
+            losses = compute_loss(
+                model_name,
+                outputs,
+                images,
+                vae_beta,
+                vq_ssim_weight,
+            )
             if training:
                 losses["loss"].backward()
                 optimizer.step()
@@ -182,8 +272,9 @@ def run_epoch(
         batch_size = images.shape[0]
         sample_count += batch_size
         batch_count += 1
-        for name in ("loss", "reconstruction_loss", "regularisation_loss"):
-            sums[name] += float(losses[name].detach().item()) * batch_size
+        for name in ("loss", "reconstruction_loss", "structural_loss", "regularisation_loss"):
+            if name in losses:
+                sums[name] += float(losses[name].detach().item()) * batch_size
 
         if include_reconstruction_metrics:
             metrics = reconstruction_metrics(images, outputs["reconstruction"])
@@ -195,10 +286,17 @@ def run_epoch(
             num_embeddings = int(model.quantizer.num_embeddings)
             counts = torch.bincount(indices, minlength=num_embeddings).to(torch.float64).cpu()
             code_counts = counts if code_counts is None else code_counts + counts
+            sums.setdefault("reinitialised_codes", 0.0)
+            sums["reinitialised_codes"] += float(
+                outputs["reinitialised_codes"].detach().item()
+            )
 
     if sample_count == 0:
         raise RuntimeError("No batches were processed; check the dataset and batch limits.")
-    statistics = {name: total / sample_count for name, total in sums.items()}
+    statistics = {
+        name: total if name == "reinitialised_codes" else total / sample_count
+        for name, total in sums.items()
+    }
     statistics["samples"] = float(sample_count)
     statistics["batches"] = float(batch_count)
     if code_counts is not None:
@@ -265,13 +363,32 @@ def synchronize(device: torch.device) -> None:
 
 def run_smoke_test() -> None:
     images = torch.rand(2, 1, 64, 64)
-    for model_name in ("vae", "vqvae"):
-        model = build_model(model_name)
+    cases = (
+        ("vae", "vae", build_model("vae"), 0.0),
+        ("vqvae", "vqvae", build_model("vqvae"), 0.0),
+        (
+            "vqvae-ema-ssim",
+            "vqvae",
+            build_model(
+                "vqvae",
+                vq_num_embeddings=128,
+                vq_codebook_update="ema",
+                vq_dead_code_patience=2,
+            ),
+            0.1,
+        ),
+    )
+    for label, model_name, model, vq_ssim_weight in cases:
         outputs = model(images)
-        losses = compute_loss(model_name, outputs, images)
+        losses = compute_loss(
+            model_name,
+            outputs,
+            images,
+            vq_ssim_weight=vq_ssim_weight,
+        )
         losses["loss"].backward()
         print(
-            f"{model_name}: input={tuple(images.shape)}, "
+            f"{label}: input={tuple(images.shape)}, "
             f"output={tuple(outputs['reconstruction'].shape)}, "
             f"loss={losses['loss'].item():.6f}"
         )
@@ -286,6 +403,22 @@ def train(args: argparse.Namespace) -> None:
         raise ValueError("--learning-rate must be positive.")
     if args.vae_beta < 0:
         raise ValueError("--vae-beta cannot be negative.")
+    if args.vq_commitment_cost < 0:
+        raise ValueError("--vq-commitment-cost cannot be negative.")
+    if not 0.0 < args.vq_ema_decay < 1.0:
+        raise ValueError("--vq-ema-decay must lie strictly between zero and one.")
+    if args.vq_ema_epsilon <= 0:
+        raise ValueError("--vq-ema-epsilon must be positive.")
+    if args.vq_dead_code_patience < 0:
+        raise ValueError("--vq-dead-code-patience cannot be negative.")
+    if args.vq_ssim_weight < 0:
+        raise ValueError("--vq-ssim-weight cannot be negative.")
+    if args.model != "vqvae" and (
+        args.vq_ssim_weight > 0
+        or args.checkpoint_metric == "ssim"
+        or args.vq_codebook_update != "gradient"
+    ):
+        raise ValueError("VQ-specific optimisation options require --model vqvae.")
     if args.resume is not None and args.overwrite:
         raise ValueError("--resume and --overwrite cannot be used together.")
     if args.resume is not None and not args.resume.is_file():
@@ -316,11 +449,16 @@ def train(args: argparse.Namespace) -> None:
         args.seed,
         pin_memory,
     )
-    model = build_model(args.model).to(device)
+    model_config = model_config_from_args(args)
+    model = build_model(args.model, **model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     parameter_count = count_parameters(model)
     history: list[Dict[str, float]] = []
     best_validation_loss = float("inf")
+    best_validation_ssim = float("-inf")
+    best_validation_metric = (
+        float("inf") if args.checkpoint_metric == "loss" else float("-inf")
+    )
     best_epoch = 0
     start_epoch = 1
 
@@ -329,6 +467,18 @@ def train(args: argparse.Namespace) -> None:
         if checkpoint["model_name"] != args.model:
             raise ValueError(
                 f"Checkpoint model is {checkpoint['model_name']}, requested model is {args.model}."
+            )
+        checkpoint_model_config = model_config_from_checkpoint(checkpoint)
+        if checkpoint_model_config != model_config:
+            raise ValueError(
+                "Resume checkpoint architecture does not match the requested VQ configuration: "
+                f"checkpoint={checkpoint_model_config}, requested={model_config}."
+            )
+        checkpoint_metric = checkpoint.get("checkpoint_metric", "loss")
+        if checkpoint_metric != args.checkpoint_metric:
+            raise ValueError(
+                "Resume checkpoint selection metric does not match --checkpoint-metric: "
+                f"checkpoint={checkpoint_metric}, requested={args.checkpoint_metric}."
             )
         model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
@@ -340,6 +490,10 @@ def train(args: argparse.Namespace) -> None:
                 [state.detach().cpu() for state in checkpoint["cuda_rng_states"]]
             )
         best_validation_loss = float(checkpoint["best_validation_loss"])
+        best_validation_ssim = float(checkpoint.get("best_validation_ssim", float("-inf")))
+        best_validation_metric = float(
+            checkpoint.get("best_validation_metric", best_validation_loss)
+        )
         best_epoch = int(checkpoint["best_epoch"])
         start_epoch = int(checkpoint["epoch"]) + 1
         history = load_history(args.output / "history.csv")
@@ -386,6 +540,7 @@ def train(args: argparse.Namespace) -> None:
             args.model,
             device,
             args.vae_beta,
+            args.vq_ssim_weight,
             optimizer=optimizer,
             max_batches=args.max_train_batches,
         )
@@ -396,6 +551,7 @@ def train(args: argparse.Namespace) -> None:
                 args.model,
                 device,
                 args.vae_beta,
+                args.vq_ssim_weight,
                 max_batches=args.max_validation_batches,
                 include_reconstruction_metrics=True,
             )
@@ -412,9 +568,21 @@ def train(args: argparse.Namespace) -> None:
         save_history(args.output / "history.csv", history)
 
         current_validation_loss = validation_statistics["loss"]
-        is_best = current_validation_loss < best_validation_loss
+        current_validation_ssim = validation_statistics["ssim"]
+        best_validation_loss = min(best_validation_loss, current_validation_loss)
+        best_validation_ssim = max(best_validation_ssim, current_validation_ssim)
+        current_validation_metric = (
+            current_validation_loss
+            if args.checkpoint_metric == "loss"
+            else current_validation_ssim
+        )
+        is_best = (
+            current_validation_metric < best_validation_metric
+            if args.checkpoint_metric == "loss"
+            else current_validation_metric > best_validation_metric
+        )
         if is_best:
-            best_validation_loss = current_validation_loss
+            best_validation_metric = current_validation_metric
             best_epoch = epoch
         checkpoint = {
             "model_name": args.model,
@@ -423,6 +591,10 @@ def train(args: argparse.Namespace) -> None:
             "epoch": epoch,
             "best_epoch": best_epoch,
             "best_validation_loss": best_validation_loss,
+            "best_validation_ssim": best_validation_ssim,
+            "best_validation_metric": best_validation_metric,
+            "checkpoint_metric": args.checkpoint_metric,
+            "model_config": _json_safe(model_config),
             "seed": args.seed,
             "config": _json_safe(config),
             "torch_rng_state": torch.get_rng_state(),
@@ -441,6 +613,7 @@ def train(args: argparse.Namespace) -> None:
                 f" train_active_codes={int(train_statistics['active_codes'])}"
                 f" val_perplexity={validation_statistics['codebook_perplexity']:.2f}"
                 f" val_active_codes={int(validation_statistics['active_codes'])}"
+                f" resets={int(train_statistics['reinitialised_codes'])}"
             )
         print(
             f"epoch={epoch:03d} train_loss={train_statistics['loss']:.6f} "
@@ -456,6 +629,9 @@ def train(args: argparse.Namespace) -> None:
     summary = {
         "best_epoch": best_epoch,
         "best_validation_loss": best_validation_loss,
+        "best_validation_ssim": best_validation_ssim,
+        "best_validation_metric": best_validation_metric,
+        "checkpoint_metric": args.checkpoint_metric,
         "completed_epochs": int(history[-1]["epoch"]),
         "training_seconds": recorded_epoch_seconds,
         "latest_segment_seconds": segment_training_seconds,

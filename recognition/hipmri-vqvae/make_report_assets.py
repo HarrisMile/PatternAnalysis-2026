@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from dataset import HipMRISliceDataset
-from train import build_model, select_device
+from train import build_model_from_checkpoint, select_device
 
 
 MODEL_LABELS = {"vae": "ConvVAE", "vqvae": "VQ-VAE"}
@@ -315,7 +315,7 @@ def load_models(checkpoints: dict[str, Path], device: torch.device) -> dict[str,
         checkpoint = torch.load(path, map_location=device, weights_only=True)
         if checkpoint["model_name"] != model_name:
             raise RuntimeError(f"Unexpected model in {path}: {checkpoint['model_name']}")
-        model = build_model(model_name).to(device)
+        model = build_model_from_checkpoint(checkpoint).to(device)
         model.load_state_dict(checkpoint["model_state"])
         model.eval()
         models[model_name] = model

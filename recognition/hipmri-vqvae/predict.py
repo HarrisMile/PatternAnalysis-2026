@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 
 from dataset import HipMRISliceDataset
 from metrics import reconstruction_metrics, region_reconstruction_metrics
-from train import build_model, positive_int, select_device
+from train import build_model_from_checkpoint, positive_int, select_device
 
 
 METRIC_NAMES = (
@@ -151,7 +151,7 @@ def main() -> None:
     model_name = checkpoint["model_name"]
     if model_name not in {"vae", "vqvae"}:
         raise ValueError(f"Unsupported model in checkpoint: {model_name}")
-    model = build_model(model_name).to(device)
+    model = build_model_from_checkpoint(checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
 

@@ -8,6 +8,8 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
+from metrics import structural_similarity
+
 
 class Encoder(nn.Module):
     """Shared three-stage convolutional encoder for 2D MRI slices."""
@@ -82,16 +84,49 @@ class ConvVAE(nn.Module):
 
 
 class VectorQuantizer(nn.Module):
-    """Nearest-neighbour codebook with data-dependent initialisation."""
+    """Nearest-neighbour codebook with gradient or EMA updates."""
 
-    def __init__(self, num_embeddings: int, embedding_dim: int, commitment_cost: float = 0.25) -> None:
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        commitment_cost: float = 0.25,
+        update_mode: str = "gradient",
+        ema_decay: float = 0.99,
+        ema_epsilon: float = 1e-5,
+        dead_code_patience: int = 0,
+    ) -> None:
         super().__init__()
+        if num_embeddings <= 1 or embedding_dim <= 0:
+            raise ValueError("The codebook must contain at least two positive-dimensional codes.")
+        if commitment_cost < 0:
+            raise ValueError("commitment_cost cannot be negative.")
+        if update_mode not in {"gradient", "ema"}:
+            raise ValueError("update_mode must be 'gradient' or 'ema'.")
+        if not 0.0 < ema_decay < 1.0:
+            raise ValueError("ema_decay must lie strictly between zero and one.")
+        if ema_epsilon <= 0:
+            raise ValueError("ema_epsilon must be positive.")
+        if dead_code_patience < 0:
+            raise ValueError("dead_code_patience cannot be negative.")
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.commitment_cost = commitment_cost
+        self.update_mode = update_mode
+        self.ema_decay = ema_decay
+        self.ema_epsilon = ema_epsilon
+        self.dead_code_patience = dead_code_patience
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         nn.init.uniform_(self.embedding.weight, -1.0 / num_embeddings, 1.0 / num_embeddings)
         self.register_buffer("codebook_initialized", torch.tensor(False, dtype=torch.bool))
+        if update_mode == "ema":
+            self.embedding.weight.requires_grad_(False)
+            self.register_buffer("ema_cluster_size", torch.zeros(num_embeddings))
+            self.register_buffer("ema_weight", torch.zeros(num_embeddings, embedding_dim))
+            self.register_buffer(
+                "inactive_batches",
+                torch.zeros(num_embeddings, dtype=torch.long),
+            )
 
     @torch.no_grad()
     def _initialise_from_batch(self, flat_inputs: Tensor) -> None:
@@ -124,7 +159,66 @@ class VectorQuantizer(nn.Module):
             next_index = min_distances.argmax()
 
         self.embedding.weight.copy_(centroids)
+        if self.update_mode == "ema":
+            self.ema_cluster_size.fill_(1.0)
+            self.ema_weight.copy_(centroids)
+            self.inactive_batches.zero_()
         self.codebook_initialized.fill_(True)
+
+    @torch.no_grad()
+    def _replace_inactive_codes(self, flat_inputs: Tensor) -> int:
+        """Re-seed codes unused for many consecutive training batches."""
+
+        if self.dead_code_patience == 0:
+            return 0
+        inactive = self.inactive_batches >= self.dead_code_patience
+        inactive_indices = inactive.nonzero(as_tuple=False).flatten()
+        if inactive_indices.numel() == 0:
+            return 0
+
+        candidate_indices = torch.randperm(flat_inputs.shape[0], device=flat_inputs.device)
+        if inactive_indices.numel() > candidate_indices.numel():
+            repeats = (
+                inactive_indices.numel() + candidate_indices.numel() - 1
+            ) // candidate_indices.numel()
+            candidate_indices = candidate_indices.repeat(repeats)
+        replacements = flat_inputs[candidate_indices[: inactive_indices.numel()]]
+        self.embedding.weight[inactive_indices] = replacements
+        self.ema_weight[inactive_indices] = replacements
+        self.ema_cluster_size[inactive_indices] = 1.0
+        self.inactive_batches[inactive_indices] = 0
+        return int(inactive_indices.numel())
+
+    @torch.no_grad()
+    def _update_ema(self, flat_inputs: Tensor, indices: Tensor) -> int:
+        """Update EMA cluster statistics and revive persistently unused codes."""
+
+        assignments = F.one_hot(indices, self.num_embeddings).to(flat_inputs.dtype)
+        counts = assignments.sum(dim=0)
+        embedding_sums = assignments.transpose(0, 1) @ flat_inputs
+
+        self.ema_cluster_size.mul_(self.ema_decay).add_(
+            counts,
+            alpha=1.0 - self.ema_decay,
+        )
+        self.ema_weight.mul_(self.ema_decay).add_(
+            embedding_sums,
+            alpha=1.0 - self.ema_decay,
+        )
+        total_count = self.ema_cluster_size.sum()
+        smoothed_sizes = (
+            (self.ema_cluster_size + self.ema_epsilon)
+            / (total_count + self.num_embeddings * self.ema_epsilon)
+            * total_count
+        )
+        normalised_embeddings = self.ema_weight / smoothed_sizes.clamp_min(
+            self.ema_epsilon
+        ).unsqueeze(1)
+        self.embedding.weight.copy_(normalised_embeddings)
+
+        self.inactive_batches.add_(1)
+        self.inactive_batches[counts > 0] = 0
+        return self._replace_inactive_codes(flat_inputs)
 
     def forward(self, inputs: Tensor) -> Dict[str, Tensor]:
         if inputs.shape[1] != self.embedding_dim:
@@ -145,7 +239,14 @@ class VectorQuantizer(nn.Module):
         indices = distances.argmin(dim=1)
         quantized = self.embedding(indices).view_as(channels_last)
 
-        codebook_loss = F.mse_loss(quantized, channels_last.detach())
+        reinitialised_codes = 0
+        if self.training and self.update_mode == "ema":
+            reinitialised_codes = self._update_ema(flat_inputs.detach(), indices)
+
+        if self.update_mode == "gradient":
+            codebook_loss = F.mse_loss(quantized, channels_last.detach())
+        else:
+            codebook_loss = channels_last.new_zeros(())
         commitment_loss = self.commitment_cost * F.mse_loss(quantized.detach(), channels_last)
         quantizer_loss = codebook_loss + commitment_loss
         quantized_st = channels_last + (quantized - channels_last).detach()
@@ -162,6 +263,11 @@ class VectorQuantizer(nn.Module):
             "commitment_loss": commitment_loss,
             "perplexity": perplexity,
             "active_codes": active_codes,
+            "reinitialised_codes": torch.tensor(
+                reinitialised_codes,
+                device=inputs.device,
+                dtype=inputs.dtype,
+            ),
             "encoding_indices": indices.view(inputs.shape[0], inputs.shape[2], inputs.shape[3]),
         }
 
@@ -176,6 +282,10 @@ class VQVAE(nn.Module):
         embedding_dim: int = 64,
         num_embeddings: int = 512,
         commitment_cost: float = 0.25,
+        codebook_update: str = "gradient",
+        ema_decay: float = 0.99,
+        ema_epsilon: float = 1e-5,
+        dead_code_patience: int = 0,
     ) -> None:
         super().__init__()
         self.encoder = Encoder(in_channels, hidden_channels)
@@ -183,7 +293,15 @@ class VQVAE(nn.Module):
             nn.Conv2d(self.encoder.out_channels, embedding_dim, 1),
             nn.BatchNorm2d(embedding_dim),
         )
-        self.quantizer = VectorQuantizer(num_embeddings, embedding_dim, commitment_cost)
+        self.quantizer = VectorQuantizer(
+            num_embeddings,
+            embedding_dim,
+            commitment_cost,
+            update_mode=codebook_update,
+            ema_decay=ema_decay,
+            ema_epsilon=ema_epsilon,
+            dead_code_patience=dead_code_patience,
+        )
         self.decoder = Decoder(embedding_dim, in_channels, hidden_channels)
 
     def forward(self, images: Tensor) -> Dict[str, Tensor]:
@@ -370,10 +488,27 @@ def vae_loss(outputs: Dict[str, Tensor], targets: Tensor, beta: float = 1e-4) ->
     }
 
 
-def vqvae_loss(outputs: Dict[str, Tensor], targets: Tensor) -> Dict[str, Tensor]:
+def vqvae_loss(
+    outputs: Dict[str, Tensor],
+    targets: Tensor,
+    ssim_weight: float = 0.0,
+) -> Dict[str, Tensor]:
+    """Combine pixel, structural, and vector-quantisation objectives."""
+
+    if ssim_weight < 0:
+        raise ValueError("ssim_weight cannot be negative.")
     reconstruction_loss = F.mse_loss(outputs["reconstruction"], targets)
+    if ssim_weight > 0:
+        structural_loss = 1.0 - structural_similarity(
+            targets,
+            outputs["reconstruction"],
+        ).mean()
+    else:
+        structural_loss = reconstruction_loss.new_zeros(())
+    regularisation_loss = outputs["quantizer_loss"] + ssim_weight * structural_loss
     return {
-        "loss": reconstruction_loss + outputs["quantizer_loss"],
+        "loss": reconstruction_loss + regularisation_loss,
         "reconstruction_loss": reconstruction_loss,
-        "regularisation_loss": outputs["quantizer_loss"],
+        "structural_loss": structural_loss,
+        "regularisation_loss": regularisation_loss,
     }

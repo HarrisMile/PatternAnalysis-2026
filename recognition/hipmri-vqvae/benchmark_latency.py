@@ -21,7 +21,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from dataset import HipMRISliceDataset
-from train import build_model, count_parameters, positive_int, select_device
+from train import build_model_from_checkpoint, count_parameters, positive_int, select_device
 
 
 EXPECTED_CHECKPOINTS = {
@@ -163,7 +163,7 @@ def benchmark_model(
         raise ValueError(
             f"Expected a {model_name} checkpoint, received {checkpoint.get('model_name')!r}."
         )
-    model = build_model(model_name).to(device)
+    model = build_model_from_checkpoint(checkpoint).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
 
