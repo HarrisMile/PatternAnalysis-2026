@@ -17,13 +17,15 @@ the ConvVAE as the stronger research baseline and not advancing the current VQ-V
 checkpoint. All final metrics are frozen; no post-test tuning or retraining is used.
 An 80-epoch PixelCNN prior, selected at epoch 73 by an internal patient-disjoint
 validation subset of the original training cohort, also completes the hard-route
-generation pipeline. Thirty-two unconditional samples contain no exact pixel or VQ
-code-grid match to any of the 11,460 training slices and cover 14/15 training-active
-codes. However, their image distribution contains excessive black regions and
-fragmented anatomy. A frozen-decoder latent interpolation audit likewise changes
-adjacent frames continuously but retains or introduces implausible black bands and
-structural breaks. The generative extension is therefore a technically complete but
-low-quality negative result, not evidence of clinically realistic synthetic MRI.
+generation pipeline. A formal three-seed audit compares 48 VQ-VAE + PixelCNN samples
+with 48 standard-normal ConvVAE samples and all 11,460 training slices. Neither model
+produces exact duplicate outputs or exact training-image matches; the VQ samples also
+contain no exact training code-grid match and cover 14/15 training-active codes.
+However, the ConvVAE samples resemble high-frequency noise, while the VQ samples
+contain excessive black regions, displaced tissue, and fragmented anatomy. Five
+failure cases selected by a predefined feature-deviation score make this limitation
+explicit. The generative extension is therefore a reproducible but low-quality
+negative result, not evidence of clinically realistic synthetic MRI.
 
 ## Research question
 
@@ -435,19 +437,36 @@ canvas one location at a time and decodes them with the matching frozen VQ-VAE:
 python sample_prior.py \
   --prior-checkpoint outputs/formal-prior/best.pt \
   --vqvae-checkpoint outputs/formal-vqvae/best.pt \
-  --output predictions/formal-prior-samples \
-  --num-samples 32 \
+  --output predictions/formal-prior-multiseed \
+  --seeds 3710 3711 3712 \
+  --samples-per-seed 16 \
   --batch-size 8 \
   --temperature 1.0 \
-  --seed 3710 \
   --device cuda
 ```
 
 The sampler refuses a VQ-VAE checkpoint whose hash differs from the one used for the
 code export. It saves the generated images and original code indices in `samples.npz`,
 a plain reconstruction panel in `samples.png`, and full sampling provenance in
-`summary.json`. The formal A100 sampling job generated 32 slices in 22 seconds using
-temperature `1.0` and seed `3710`.
+`summary.json`. The formal protocol uses temperature `1.0` and three independent
+sampling seeds. For a same-seed generative baseline, `sample_vae.py` draws a standard-
+normal `64 x 32 x 18` latent tensor for the frozen ConvVAE and decodes 16 samples per
+seed:
+
+```bash
+python sample_vae.py \
+  --checkpoint outputs/formal-vae/best.pt \
+  --output predictions/formal-vae-multiseed \
+  --seeds 3710 3711 3712 \
+  --samples-per-seed 16 \
+  --batch-size 16 \
+  --device cuda
+```
+
+This baseline tests whether the continuous model's nominal Gaussian prior generates
+more convincing images; it does not use input images or the test set. Both uncurated
+panels show the first four outputs per seed in generation order, with no visual
+selection.
 
 The separate audit compares every generated image and code grid with all 11,460
 training slices. It refuses to run unless the training-code archive SHA-256 matches
@@ -455,27 +474,37 @@ the archive recorded by the formal prior:
 
 ```bash
 python evaluate_generation.py \
-  --train-codes outputs/formal-prior-data/train_code_indices.npz \
-  --train-metadata outputs/formal-prior-data/train_samples.csv \
-  --train-summary outputs/formal-prior-data/summary.json \
+  --samples predictions/formal-prior-multiseed/samples.npz \
+  --sample-summary predictions/formal-prior-multiseed/summary.json \
+  --train-codes outputs/prior-data/train_code_indices.npz \
+  --train-metadata outputs/prior-data/train_samples.csv \
+  --train-summary outputs/prior-data/summary.json \
   --prior-summary outputs/formal-prior/summary.json \
   --vqvae-checkpoint outputs/formal-vqvae/best.pt \
-  --device cpu \
-  --overwrite
+  --manifest data/manifest.csv \
+  --output report_assets/generative_evaluation_multiseed \
+  --failure-cases 5 \
+  --interpolation-pairs 4 \
+  --interpolation-steps 7 \
+  --device cuda
 ```
 
-The audit also decodes seven evenly spaced embedding interpolants for four generated
-sample/training-neighbour pairs selected at fixed ranks across the complete
-nearest-neighbour MSE distribution. It verifies the frozen VQ-VAE checkpoint hash and
-does not retrain either model. The formal results, sample panel, distribution checks,
-nearest-neighbour evidence, and interpolation diagnostic are reported together below.
+`compare_generators.py` then verifies matching seed and sample indices, evaluates both
+48-sample cohorts against the complete training cohort, and creates a common uncurated
+panel. The VQ audit also deterministically selects the five largest predefined
+feature-deviation scores and decodes seven evenly spaced embedding interpolants for
+four generated/training-neighbour pairs selected at fixed ranks across the complete
+nearest-neighbour MSE distribution. These scripts verify frozen artifact hashes and do
+not retrain either model. Slurm job `699268` ran the complete formal generation and
+audit sequence on one A100 in 2 minutes 29 seconds with exit code `0:0` and an empty
+error log.
 
 ## Rangpur execution
 
 The Rangpur workflow reuses the `comp3710lab2` Conda environment and the course account/partition pattern that was verified in earlier COMP3710 work. A live check on 8 October 2026 confirmed that the `comp3710` partition is available with A100 GPUs, the user account is associated with the `comp3710` Slurm account under normal QOS, and the existing environment contains CUDA-enabled PyTorch 2.14.0. `nibabel` was the only required package missing before installing this project's requirements. Because cluster configuration can change, run `sinfo` before every new submission and compare it with the current [EAIT Compute documentation](https://student.eait.uq.edu.au/infrastructure/compute/).
 
 The complete login, setup, submission, monitoring, and log-inspection sequence is in
-`RANGPUR_COMMANDS.txt`. Eight Slurm scripts are provided:
+`RANGPUR_COMMANDS.txt`. Nine Slurm scripts are provided:
 
 - `slurm/gpu_sanity.sh`: short validation-only ConvVAE and VQ-VAE GPU pipeline check;
 - `slurm/train_vae.sh`: formal ConvVAE baseline training and validation evaluation;
@@ -485,8 +514,11 @@ The complete login, setup, submission, monitoring, and log-inspection sequence i
 - `slurm/export_code_indices.sh`: train-only extraction of frozen VQ code-index grids
   for learned-prior training;
 - `slurm/train_prior.sh`: patient-disjoint PixelCNN-prior training and checkpoint
-  selection within the original training cohort; and
-- `slurm/sample_prior.sh`: unconditional code sampling and frozen VQ-VAE decoding.
+  selection within the original training cohort;
+- `slurm/sample_prior.sh`: initial unconditional code sampling and frozen VQ-VAE
+  decoding; and
+- `slurm/sample_generators.sh`: formal same-seed ConvVAE and VQ-VAE + PixelCNN
+  sampling, full training-neighbour audit, five-case failure analysis, and comparison.
 
 The reconstruction jobs used 40 epochs, while the learned prior used 80 epochs after
 validation continued improving at epoch 40. All formal training used batch size 64,
@@ -703,57 +735,88 @@ validation patients 036–039 and test patients 040–042 were excluded from bot
 The initial 40-epoch job and its 40-to-80 continuation took 131.7 seconds of measured
 training time in total. Validation selected epoch 73.
 
-| Evidence | Formal result |
-| --- | ---: |
-| Prior validation NLL / perplexity | 0.897663 / 2.453863 |
-| Unconditional samples | 32 |
-| Generated coverage of training-active codes | 14/15 (93.3%) |
-| Code-frequency Jensen-Shannon divergence | 0.0404 nats |
-| Exact generated-image / code-grid duplicates | 0 / 0 |
-| Exact training pixel / code-grid matches | 0 / 0 |
-| Median nearest-training SSIM | 0.258 |
-| Median nearest-training code mismatch | 65.7% |
-| Adjacent interpolation-frame SSIM | median row mean 0.796; minimum 0.646 |
+The formal generative comparison uses seeds `3710`, `3711`, and `3712`, with 16
+unconditional samples per model and seed. The sample identities are matched across
+the two models. All image-space comparisons use the complete 11,460-slice training
+cohort as the reference; the official validation and test splits remain outside the
+generative training and audit reference.
 
-![Sixteen unconditional VQ-VAE samples decoded from PixelCNN code grids](report_assets/generative_evaluation/unconditional_samples.png)
+| Model | Samples / seeds | Pairwise MSE median | Mean absolute feature shift | Feature values inside train P05–P95 | Nearest-train SSIM median | Sampling time | Peak accelerator memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ConvVAE | 48 / 3 | 0.0614 | 1.114 SD | 77.7% | 0.065 | 36.63 ms/image | 222.6 MiB |
+| VQ-VAE + PixelCNN | 48 / 3 | 0.0687 | 1.429 SD | 47.0% | 0.256 | 203.90 ms/image | 114.6 MiB |
 
-*Figure 6. First 16 of 32 deterministic-seed unconditional samples from the validation-selected PixelCNN prior.*
+![Uncurated same-seed ConvVAE and VQ-VAE plus PixelCNN samples](report_assets/generative_baseline_comparison/uncurated_multiseed_comparison.png)
 
-The samples are numerically diverse and their aggregate code frequencies are close to
-the training export, but this does not imply realistic anatomy. Several images contain
-large internal black bands, disconnected tissue blocks, and abrupt vertical shifts.
-The near-zero area is `2.39` training standard deviations above the training mean,
-tissue area is `1.24` standard deviations below it, and vertical centre of mass is
-shifted by `4.66` standard deviations. Only 18.75% of generated near-zero fractions
-and 21.88% of vertical centres fall inside the corresponding training 5th–95th
-percentile interval.
+*Figure 6. The first four outputs per model and seed in generation order. The panel is uncurated: no image was retained or rejected by visual quality.*
 
-![Generated samples beside their closest training slices and absolute errors](report_assets/generative_evaluation/nearest_training_neighbours.png)
+Both models fail visually, but in different ways. The ConvVAE's direct standard-normal
+samples are dominated by high-frequency texture without recognisable anatomy. The
+VQ-VAE + PixelCNN samples contain coarser tissue-like regions but repeatedly introduce
+large black bands, disconnected blocks, and vertical displacement. The ConvVAE's lower
+mean feature shift summarises seven global image statistics; it does not override the
+visual evidence or establish anatomical plausibility. Likewise, the VQ pipeline's
+higher nearest-training SSIM is a similarity diagnostic, not the paired-reconstruction
+SSIM target and not proof of generation quality.
 
-*Figure 7. The eight generated samples with the lowest full-resolution MSE to their nearest training slice, after a deterministic pooled-pixel search over all 11,460 training slices.*
+For the VQ samples, 14 of the 15 codes active in the training export are used (93.3%
+coverage). Generated-code perplexity is `10.308`, compared with `10.510` for training
+codes, and code-frequency Jensen-Shannon divergence is `0.0444` nats. This close
+code-frequency agreement does not transfer to image-space coverage: near-zero area is
+`2.49` training standard deviations above the training mean, tissue area is `1.40`
+standard deviations below it, and vertical centre of mass is shifted by `3.93`
+standard deviations. Only 10.4% of generated near-zero fractions and 22.9% of vertical
+centres lie inside the corresponding training 5th–95th percentile interval.
 
-Even these most similar pairs retain low SSIM and substantial anatomical differences.
-Across all 32 samples, nearest-training SSIM ranges from `0.206` to `0.330`, while the
-nearest code grid still differs at 51.6%–80.7% of positions. No exact copy of a
-training image or training code grid was detected. This is evidence against direct
-memorisation under the stated pixel and code-grid checks; it is not a privacy guarantee.
-Together, Figures 6–7 show that the pipeline achieves unconditional generation without
-simple copying, but fails to produce a distributionally or anatomically convincing
-synthetic cohort.
+Neither 48-sample cohort contains an exact duplicate generated image or an exact
+training-image match. The VQ cohort additionally contains no duplicate generated code
+grid and no exact training code-grid match. Its nearest-training full-resolution SSIM
+has median `0.256` and range `0.133`–`0.330`; the nearest code grid still differs at a
+median 67.2% of positions, with range 58.2%–80.7%. These checks provide evidence
+against direct copying under the stated definitions, but they are not a formal privacy
+guarantee.
 
-![Frozen-decoder interpolation between training-neighbour and generated VQ embeddings](report_assets/generative_evaluation/latent_interpolation.png)
+![Generated VQ samples beside their closest training slices and absolute errors](report_assets/generative_evaluation_multiseed/nearest_training_neighbours.png)
 
-*Figure 8. Seven-point linear embedding interpolations from each nearest training-code decode at alpha 0 to its generated sample at alpha 1. The four rows are selected at fixed ranks across the complete nearest-training MSE distribution, rather than chosen visually.*
+*Figure 7. The eight VQ samples with the lowest full-resolution MSE to their nearest training slice after searching all 11,460 training slices.*
 
-The median of the four row-wise mean adjacent-frame SSIM values is `0.796`, and the
-lowest adjacent-frame SSIM is `0.646`. These values show that the frozen decoder changes
-its output incrementally along the tested paths. They do not establish semantic or
-anatomical continuity: all four rows preserve or develop black horizontal bands,
-fragmented regions, or abrupt structural displacement before reaching the generated
-endpoint. The endpoint-to-endpoint SSIM is only `0.250`–`0.284`. Intermediate tensors
-were deliberately not re-quantised, so this is a decoder-continuity diagnostic through
-off-codebook embedding space, not an additional sampling method or proof that the
-intermediate images lie on the learned discrete-data manifold.
+Even the closest pairs remain visually and structurally different. Their low SSIM and
+large absolute-error regions support the numerical conclusion that no close copy was
+found, while also showing that distance from training examples is not the same as
+successful synthesis.
+
+The five generation failures below are selected automatically as the largest maximum
+absolute standardised deviation across seven predefined image features. They are not
+visually cherry-picked and the score is not a clinical abnormality measure.
+
+| Case | Seed / sample | Dominant feature deviation | Nearest-training SSIM |
+| --- | ---: | ---: | ---: |
+| 1 | 3712 / 11 | vertical centre of mass `+19.41 SD` | 0.133 |
+| 2 | 3712 / 6 | vertical centre of mass `-17.30 SD` | 0.202 |
+| 3 | 3712 / 1 | vertical centre of mass `-15.16 SD` | 0.272 |
+| 4 | 3712 / 3 | vertical centre of mass `-15.13 SD` | 0.243 |
+| 5 | 3710 / 8 | vertical centre of mass `-13.71 SD` | 0.206 |
+
+![Five deterministically selected VQ generation failures](report_assets/generative_evaluation_multiseed/generation_failure_cases.png)
+
+*Figure 8. Each row shows a generated failure, its closest training slice, and absolute error. Selection is determined by the predefined feature-deviation score.*
+
+All five cases show extreme vertical mass displacement associated with black bands,
+truncated content, or tissue concentrated at one edge. This is a systematic spatial-
+organisation failure rather than an isolated unattractive sample. It also explains why
+apparently reasonable code-frequency coverage does not establish realistic generation.
+
+![Frozen-decoder interpolation between training-neighbour and generated VQ embeddings](report_assets/generative_evaluation_multiseed/latent_interpolation.png)
+
+*Figure 9. Seven-point linear embedding interpolations from a nearest training-code decode at alpha 0 to a generated sample at alpha 1. Four pairs are selected at evenly spaced ranks across the complete nearest-training MSE distribution.*
+
+The median of the four row-wise mean adjacent-frame SSIM values is `0.823`, and the
+lowest adjacent-frame SSIM is `0.775`. The frozen decoder therefore changes its output
+incrementally along these paths, but the paths still preserve or develop implausible
+bands and fragmented structures. Intermediate tensors were deliberately not
+re-quantised, so this is a decoder-continuity diagnostic through off-codebook embedding
+space, not an additional sampling method or evidence that intermediate images lie on
+the learned discrete-data manifold.
 
 ## Limitations and threats to validity
 
@@ -763,22 +826,27 @@ intermediate images lie on the learned discrete-data manifold.
   few for a reliable population-level confidence interval or clinical generalisation.
   Slices from the same patient are correlated and must not be treated as 540 independent
   patient observations.
-- **One fixed experimental configuration:** the comparison uses one official split,
-  one random seed, one architecture scale, and one 40-epoch budget. This is a controlled
-  engineering comparison, not proof that ConvVAEs always outperform VQ-VAEs. No data
-  augmentation, multi-seed study, cross-validation, or architecture ablation was run.
+- **Restricted training replication:** the reconstruction comparison uses one official
+  split, one training seed, one architecture scale, and one 40-epoch budget. The
+  generative audit covers three sampling seeds, but all VQ samples come from one
+  trained VQ-VAE and one trained prior, and all ConvVAE samples come from one trained
+  baseline checkpoint. This is a controlled engineering comparison, not proof that
+  ConvVAEs always outperform VQ-VAEs. No multi-seed model training, cross-validation,
+  data augmentation, or architecture ablation was run.
 - **Two-dimensional and intensity-normalised input:** each slice is reconstructed
   independently, so through-plane anatomical context is absent. Per-slice percentile
   normalisation improves numerical consistency but removes absolute scanner-intensity
   differences. Zero padding also changes the whole-image pixel distribution, although
   foreground metrics were added to check that background did not determine the result.
 - **Low-quality generative result:** the learned prior enables unconditional sampling,
-  and the initial 32-sample audit detects neither exact training copies nor duplicate
-  outputs. However, the sample size is small, the VQ-VAE remains below the approximate
-  0.6 SSIM target on validation (0.5579) and test (0.5897), and image-space features
-  show large distribution shifts. The interpolation paths are locally continuous but
-  pass through visibly implausible structures outside the discrete codebook support.
-  The audit cannot establish clinical realism, population coverage, or privacy.
+  and the 48-sample, three-seed VQ audit detects neither exact training copies nor
+  duplicate outputs. The same-size ConvVAE sample cohort provides a baseline, but both
+  generators are visually poor. The VQ-VAE also remains below the approximate 0.6
+  paired-reconstruction SSIM target on validation (0.5579) and test (0.5897), and its
+  generated image-space features show large distribution shifts. The interpolation
+  paths are locally continuous but pass through visibly implausible structures outside
+  the discrete codebook support. This engineering-scale audit cannot establish
+  clinical realism, population coverage, or privacy.
 - **Metric and safety boundary:** MSE, MAE, PSNR, SSIM, mask-region scores, and visual
   inspection measure image similarity, not diagnostic correctness. There was no
   radiologist assessment, downstream clinical task, subgroup/fairness analysis,
@@ -806,10 +874,10 @@ test set or presenting it as a clinically useful generator.
 
 If a later project revisits the VQ route, it should define a new untouched test
 protocol and investigate codebook size/regularisation using validation data only,
-repeat training across seeds, expand the patient cohort, and evaluate 2.5D or 3D
-context. A stronger prior and larger diversity/privacy audit, external-site validation,
-and domain-expert review should occur only after reconstruction and code utilisation
-meet predeclared acceptance criteria.
+repeat model and prior training across seeds, expand the patient cohort, and evaluate
+2.5D or 3D context. A stronger prior and larger diversity/privacy audit, external-site
+validation, and domain-expert review should occur only after reconstruction and code
+utilisation meet predeclared acceptance criteria.
 
 ## Reproducible report assets
 
@@ -839,11 +907,16 @@ The independent A100 timing evidence is stored in
 identity, source commit, and checkpoint hashes; the CSV provides the two concise rows
 used in the report.
 
-The generative evidence is stored under `report_assets/generative_evaluation/`.
-`REPORT_RESULTS.md` gives the concise interpretation; `summary.json` retains hashes,
-protocol details, and complete metrics; the CSV files retain per-sample neighbours,
-image-feature comparisons, and interpolation metrics; and the three PNG files show the
-unconditional cohort, closest training examples, and frozen-decoder interpolation.
+The formal VQ generative evidence is stored under
+`report_assets/generative_evaluation_multiseed/`. `REPORT_RESULTS.md` gives the concise
+interpretation; `summary.json` retains hashes, protocol details, and complete metrics;
+the CSV files retain per-sample neighbours, image-feature comparisons, five
+deterministically selected failures, and interpolation metrics; and the PNG files show
+the unconditional cohort, closest training examples, failures, and frozen-decoder
+interpolation. The matched ConvVAE and VQ comparison is stored under
+`report_assets/generative_baseline_comparison/`, including the common-seed metrics and
+uncurated panel. Raw generated arrays remain ignored because the tracked summaries,
+tables, and figures preserve the report evidence without committing bulky artifacts.
 
 ## Codebase structure
 
@@ -857,8 +930,11 @@ unconditional cohort, closest training examples, and frozen-decoder interpolatio
 - `export_code_indices.py`: train-only VQ code-grid export with split and provenance guards.
 - `train_prior.py`: patient-disjoint PixelCNN-prior training, validation, and resume support.
 - `sample_prior.py`: unconditional VQ code sampling and matching-checkpoint image decoding.
+- `sample_vae.py`: same-seed standard-normal ConvVAE baseline sampling and profiling.
 - `evaluate_generation.py`: hash-guarded diversity, distribution-coverage,
-  nearest-training-neighbour, and latent-interpolation audit.
+  nearest-training-neighbour, deterministic failure, and latent-interpolation audit.
+- `compare_generators.py`: common-seed ConvVAE/VQ generative comparison and uncurated
+  report panel.
 - `slurm/`: Rangpur sanity, model training, frozen evaluation, prior, and sampling scripts.
 - `RANGPUR_COMMANDS.txt`: copyable Rangpur setup, monitoring, and evidence commands.
 
@@ -918,9 +994,10 @@ AI-assisted code and claims were verified through the following project evidence
   the frozen test set;
 - SHA-256 verification of the reported checkpoints;
 - repeated frozen-model latency measurements using a documented timing protocol;
-- validation-selected 80-epoch prior training, deterministic-seed sampling, exact
-  source-archive hash checks, a full 11,460-slice nearest-neighbour audit, and a
-  frozen-decoder latent-interpolation diagnostic; and
+- validation-selected 80-epoch prior training, three-seed ConvVAE and VQ sampling,
+  exact source-archive hash checks, a full 11,460-slice nearest-neighbour audit, five
+  deterministically selected generation failures, and a frozen-decoder latent-
+  interpolation diagnostic; and
 - direct inspection of saved metrics, training curves, codebook statistics, matched
   reconstructions, unconditional samples, nearest neighbours, and failure cases before
   including numerical claims in the report.
@@ -945,7 +1022,7 @@ correctness of the submitted code, analysis, and conclusions.
    Library,” *Advances in Neural Information Processing Systems 32*, 2019.
    [Official proceedings](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html).
 5. The University of Queensland, “COMP3710/7710 Pattern Recognition Final Report
-   Specification,” draft v2.2, 2026. Internal course material.
+   Specification,” version 2.5, 2026. Internal course material.
 6. A. van den Oord, N. Kalchbrenner, L. Espeholt, K. Kavukcuoglu, O. Vinyals, and
    A. Graves, “Conditional Image Generation with PixelCNN Decoders,” *Advances in
    Neural Information Processing Systems 29*, 2016.

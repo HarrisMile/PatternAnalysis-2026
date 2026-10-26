@@ -1,0 +1,282 @@
+{
+  "artifacts": {
+    "comparison_csv": "generative_model_comparison.csv",
+    "comparison_panel": "uncurated_multiseed_comparison.png",
+    "text_report": "REPORT_RESULTS.md"
+  },
+  "created_utc": "2026-10-26T04:48:00.884270+00:00",
+  "inputs": {
+    "manifest": {
+      "path": "/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/data/manifest.csv",
+      "sha256": "b427decf880ac276a4d150ff93a07cd2d0f967766bfc03281a08e0992a98e81f"
+    },
+    "train_metadata": {
+      "path": "/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/outputs/prior-data/train_samples.csv",
+      "sha256": "66a02cfc2c3252b79320bdce7fa77815d9936d8fe4c3930cb8a8f89eef578cf4"
+    },
+    "vae_samples": {
+      "path": "/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/predictions/formal-vae-multiseed/samples.npz",
+      "sha256": "3dd8800763ce53432d4ac6d6c371008ec8b11488d24dc0852560a2970da95aad"
+    },
+    "vae_summary": {
+      "path": "/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/predictions/formal-vae-multiseed/summary.json",
+      "sha256": "8f10f9290571dd1ca5e64c2bc5293fd8ef573cfd98af60fea35385289f5c92b8"
+    },
+    "vq_samples": {
+      "path": "/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/predictions/formal-prior-multiseed/samples.npz",
+      "sha256": "90321cd5d430a95fa1fa8959a8b0bba4a335f7e5d44222d022fb4f1d2daf65e7"
+    },
+    "vq_summary": {
+      "path": "/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/predictions/formal-prior-multiseed/summary.json",
+      "sha256": "24c062e0973616f93e82f9da61cd7295c5c89b3a46e23c2d6db9744f47857546"
+    }
+  },
+  "limitations": [
+    "Image-feature distances are engineering diagnostics, not clinical realism scores.",
+    "Nearest-neighbour SSIM is not the paired-reconstruction SSIM target.",
+    "A multi-seed sample audit does not establish privacy or population coverage."
+  ],
+  "models": [
+    {
+      "device_name": "NVIDIA A100-PCIE-40GB",
+      "exact_duplicate_images": 0,
+      "exact_training_pixel_matches": 0,
+      "feature_metrics": [
+        {
+          "feature": "mean_intensity",
+          "generated_fraction_inside_train_p05_p95": 0.8125,
+          "generated_mean": 0.13813823771973452,
+          "generated_std": 0.008612569420346754,
+          "quantile_wasserstein_distance": 0.0563762884581095,
+          "standardised_mean_difference": -1.1898642814443707,
+          "train_mean": 0.19436173898543363,
+          "train_p05": 0.1287086524069309,
+          "train_p95": 0.2782528862357139,
+          "train_std": 0.04725202877545804
+        },
+        {
+          "feature": "intensity_std",
+          "generated_fraction_inside_train_p05_p95": 0.7708333333333334,
+          "generated_mean": 0.17629999915758768,
+          "generated_std": 0.005110378061960576,
+          "quantile_wasserstein_distance": 0.04135843958521818,
+          "standardised_mean_difference": -1.2955270876340013,
+          "train_mean": 0.21723139572492028,
+          "train_p05": 0.17038941904902458,
+          "train_p95": 0.27468384951353075,
+          "train_std": 0.031594396564941694
+        },
+        {
+          "feature": "near_zero_fraction",
+          "generated_fraction_inside_train_p05_p95": 1.0,
+          "generated_mean": 0.2623912669994213,
+          "generated_std": 0.02399927818580765,
+          "quantile_wasserstein_distance": 0.02146130925281316,
+          "standardised_mean_difference": 0.06039621179060845,
+          "train_mean": 0.2594617037711181,
+          "train_p05": 0.1909722222222222,
+          "train_p95": 0.3487413194444444,
+          "train_std": 0.04850574467252799
+        },
+        {
+          "feature": "tissue_fraction",
+          "generated_fraction_inside_train_p05_p95": 0.5833333333333334,
+          "generated_mean": 0.5240371138961227,
+          "generated_std": 0.025714247201461433,
+          "quantile_wasserstein_distance": 0.12546328161855505,
+          "standardised_mean_difference": -1.7845719926180115,
+          "train_mean": 0.6495472959614965,
+          "train_p05": 0.5221082899305556,
+          "train_p95": 0.7473700629340277,
+          "train_std": 0.07033069138401485
+        },
+        {
+          "feature": "intensity_p95",
+          "generated_fraction_inside_train_p05_p95": 1.0,
+          "generated_mean": 0.5280675900479158,
+          "generated_std": 0.016812868445712652,
+          "quantile_wasserstein_distance": 0.11008644284726261,
+          "standardised_mean_difference": -0.7883793894500215,
+          "train_mean": 0.6196725129613078,
+          "train_p05": 0.4342100977897644,
+          "train_p95": 0.8038290202617645,
+          "train_std": 0.11619395958244942
+        },
+        {
+          "feature": "vertical_centre_of_mass",
+          "generated_fraction_inside_train_p05_p95": 0.4375,
+          "generated_mean": 0.49919954997797805,
+          "generated_std": 0.021312283040888634,
+          "quantile_wasserstein_distance": 0.0389707885109759,
+          "standardised_mean_difference": -1.945371441385922,
+          "train_mean": 0.5381945484049657,
+          "train_p05": 0.5047091156244278,
+          "train_p95": 0.5690046399831772,
+          "train_std": 0.020045014333718626
+        },
+        {
+          "feature": "horizontal_centre_of_mass",
+          "generated_fraction_inside_train_p05_p95": 0.8333333333333334,
+          "generated_mean": 0.5078234976778427,
+          "generated_std": 0.018296474106761856,
+          "quantile_wasserstein_distance": 0.01544007641687379,
+          "standardised_mean_difference": -0.7332771346778558,
+          "train_mean": 0.5231228228898989,
+          "train_p05": 0.4887137547135353,
+          "train_p95": 0.5563871443271637,
+          "train_std": 0.02086431512524585
+        }
+      ],
+      "generation_seconds": 1.758230471983552,
+      "gradient_energy_median": 0.09115626662969589,
+      "gradient_energy_shift_z": 1.8456850051879883,
+      "images_per_second": 27.30017524144527,
+      "mean_absolute_feature_shift_z": 1.1139125055715418,
+      "mean_feature_fraction_inside_train_p05_p95": 0.7767857142857143,
+      "mean_feature_quantile_wasserstein": 0.058450946669972595,
+      "milliseconds_per_image": 36.62980149965733,
+      "model": "ConvVAE",
+      "nearest_training_mse_median": 0.04589838162064552,
+      "nearest_training_ssim_max": 0.08226832747459412,
+      "nearest_training_ssim_median": 0.06515974551439285,
+      "nearest_training_ssim_min": 0.05176630616188049,
+      "pairwise_mse_mean": 0.06142667680978775,
+      "pairwise_mse_median": 0.06142089143395424,
+      "pairwise_mse_min": 0.05191636085510254,
+      "peak_accelerator_memory_mb": 222.60205078125,
+      "samples": 48,
+      "seeds": [
+        3710,
+        3711,
+        3712
+      ]
+    },
+    {
+      "device_name": "NVIDIA A100-PCIE-40GB",
+      "exact_duplicate_images": 0,
+      "exact_training_pixel_matches": 0,
+      "feature_metrics": [
+        {
+          "feature": "mean_intensity",
+          "generated_fraction_inside_train_p05_p95": 0.5833333333333334,
+          "generated_mean": 0.1550097018480301,
+          "generated_std": 0.057710352719615214,
+          "quantile_wasserstein_distance": 0.03968071931672025,
+          "standardised_mean_difference": -0.8328115883532681,
+          "train_mean": 0.19436173898543363,
+          "train_p05": 0.1287086524069309,
+          "train_p95": 0.2782528862357139,
+          "train_std": 0.04725202877545804
+        },
+        {
+          "feature": "intensity_std",
+          "generated_fraction_inside_train_p05_p95": 0.7708333333333334,
+          "generated_mean": 0.1915911564913889,
+          "generated_std": 0.035823851242771605,
+          "quantile_wasserstein_distance": 0.02552883789018466,
+          "standardised_mean_difference": -0.8115438818661519,
+          "train_mean": 0.21723139572492028,
+          "train_p05": 0.17038941904902458,
+          "train_p95": 0.27468384951353075,
+          "train_std": 0.031594396564941694
+        },
+        {
+          "feature": "near_zero_fraction",
+          "generated_fraction_inside_train_p05_p95": 0.10416666666666667,
+          "generated_mean": 0.38021172417534715,
+          "generated_std": 0.19650800878057287,
+          "quantile_wasserstein_distance": 0.15830377202008059,
+          "standardised_mean_difference": 2.4893962811917776,
+          "train_mean": 0.2594617037711181,
+          "train_p05": 0.1909722222222222,
+          "train_p95": 0.3487413194444444,
+          "train_std": 0.04850574467252799
+        },
+        {
+          "feature": "tissue_fraction",
+          "generated_fraction_inside_train_p05_p95": 0.25,
+          "generated_mean": 0.5509553132233797,
+          "generated_std": 0.18722066827071526,
+          "quantile_wasserstein_distance": 0.1325029557573503,
+          "standardised_mean_difference": -1.4018344025624836,
+          "train_mean": 0.6495472959614965,
+          "train_p05": 0.5221082899305556,
+          "train_p95": 0.7473700629340277,
+          "train_std": 0.07033069138401485
+        },
+        {
+          "feature": "intensity_p95",
+          "generated_fraction_inside_train_p05_p95": 0.75,
+          "generated_mean": 0.5646503871927658,
+          "generated_std": 0.13798336262309085,
+          "quantile_wasserstein_distance": 0.057518329561143736,
+          "standardised_mean_difference": -0.4735368857922351,
+          "train_mean": 0.6196725129613078,
+          "train_p05": 0.4342100977897644,
+          "train_p95": 0.8038290202617645,
+          "train_std": 0.11619395958244942
+        },
+        {
+          "feature": "vertical_centre_of_mass",
+          "generated_fraction_inside_train_p05_p95": 0.22916666666666666,
+          "generated_mean": 0.4593496338153879,
+          "generated_std": 0.1384994717392557,
+          "quantile_wasserstein_distance": 0.10664067500083894,
+          "standardised_mean_difference": -3.9333927767239967,
+          "train_mean": 0.5381945484049657,
+          "train_p05": 0.5047091156244278,
+          "train_p95": 0.5690046399831772,
+          "train_std": 0.020045014333718626
+        },
+        {
+          "feature": "horizontal_centre_of_mass",
+          "generated_fraction_inside_train_p05_p95": 0.6041666666666666,
+          "generated_mean": 0.5219167253623406,
+          "generated_std": 0.034048024380776656,
+          "quantile_wasserstein_distance": 0.011129166250700479,
+          "standardised_mean_difference": -0.057806715452591695,
+          "train_mean": 0.5231228228898989,
+          "train_p05": 0.4887137547135353,
+          "train_p95": 0.5563871443271637,
+          "train_std": 0.02086431512524585
+        }
+      ],
+      "generation_seconds": 9.786961956880987,
+      "gradient_energy_median": 0.041821494698524475,
+      "gradient_energy_shift_z": -2.0209951400756836,
+      "images_per_second": 4.90448417103045,
+      "mean_absolute_feature_shift_z": 1.428617504563215,
+      "mean_feature_fraction_inside_train_p05_p95": 0.47023809523809523,
+      "mean_feature_quantile_wasserstein": 0.07590063654243127,
+      "milliseconds_per_image": 203.89504076835388,
+      "model": "VQ-VAE + PixelCNN",
+      "nearest_training_mse_median": 0.046883635222911835,
+      "nearest_training_ssim_max": 0.329714834690094,
+      "nearest_training_ssim_median": 0.25610071420669556,
+      "nearest_training_ssim_min": 0.1331326961517334,
+      "pairwise_mse_mean": 0.07141804695129395,
+      "pairwise_mse_median": 0.06873734295368195,
+      "pairwise_mse_min": 0.013481670059263706,
+      "peak_accelerator_memory_mb": 114.599609375,
+      "samples": 48,
+      "seeds": [
+        3710,
+        3711,
+        3712
+      ]
+    }
+  ],
+  "protocol": {
+    "panel_selection_rule": "First four samples per model and seed in generation order; no visual selection",
+    "reference_split": "train",
+    "same_seed_and_sample_indices_verified": true,
+    "samples_per_model": 48,
+    "sampling_seeds": [
+      3710,
+      3711,
+      3712
+    ],
+    "training_samples": 11460
+  },
+  "schema_version": 1
+}
