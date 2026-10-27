@@ -1126,7 +1126,7 @@ correctness of the submitted code, analysis, and conclusions.
    Library,” *Advances in Neural Information Processing Systems 32*, 2019.
    [Official proceedings](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html).
 5. The University of Queensland, “COMP3710/7710 Pattern Recognition Final Report
-   Specification,” version 2.2, 2026. Internal course material.
+   Specification,” version 2.5, 2026. Internal course material.
 6. A. van den Oord, N. Kalchbrenner, L. Espeholt, K. Kavukcuoglu, O. Vinyals, and
    A. Graves, “Conditional Image Generation with PixelCNN Decoders,” *Advances in
    Neural Information Processing Systems 29*, 2016.
