@@ -27,10 +27,13 @@ python -m pip install -r requirements.txt
 python -c "import nibabel, torch; print('PyTorch:', torch.__version__); print('nibabel:', nibabel.__version__)"
 test -d /home/groups/comp3710/HipMRI_Study_open/keras_slices_data && echo 'HipMRI data is ready'
 bash -n slurm/gpu_sanity.sh slurm/train_vae.sh slurm/train_vqvae.sh \
-  slurm/evaluate_test.sh slurm/benchmark_latency.sh slurm/export_code_indices.sh \
-  slurm/train_prior.sh slurm/sample_prior.sh slurm/sample_generators.sh
+  slurm/evaluate_test.sh slurm/train_vqvae_v2.sh \
+  slurm/evaluate_vqvae_v2_test.sh slurm/benchmark_latency.sh \
+  slurm/export_code_indices.sh slurm/train_prior.sh slurm/sample_prior.sh \
+  slurm/sample_generators.sh
 python -m py_compile benchmark_latency.py export_code_indices.py train_prior.py \
-  sample_prior.py sample_vae.py evaluate_generation.py compare_generators.py
+  sample_prior.py sample_vae.py evaluate_generation.py compare_generators.py \
+  make_vqvae_v2_report_assets.py
 python train_prior.py --smoke-test
 
 ## Stage 5: Submit the short GPU sanity job on the verified comp3710 partition
@@ -153,6 +156,31 @@ cat predictions/formal-vae-multiseed/summary.json
 cat report_assets/generative_evaluation_multiseed/REPORT_RESULTS.md
 cat report_assets/generative_baseline_comparison/REPORT_RESULTS.md
 
+## Stage 13: Run the separately labelled validation-led VQ-VAE v2 follow-up
+## This stage was designed after the primary V1 test result had been observed
+VQVAE_V2_JOB=$(sbatch --parsable slurm/train_vqvae_v2.sh)
+VQVAE_V2_JOB=${VQVAE_V2_JOB%%;*}
+echo "$VQVAE_V2_JOB"
+squeue -j "$VQVAE_V2_JOB" -o '%.18i %.12P %.22j %.2t %.10M %R'
+
+## Inspect validation evidence; do not run the V2 test unless both gates pass
+sacct -j "$VQVAE_V2_JOB" --format=JobID,JobName,Partition,State,Elapsed,ExitCode,MaxRSS
+tail -n 180 "hipmri_vqvae_v2_${VQVAE_V2_JOB}.out"
+tail -n 120 "hipmri_vqvae_v2_${VQVAE_V2_JOB}.err"
+cat outputs/vqvae-v2-ema-k128-ssim010/summary.json
+cat predictions/vqvae-v2-ema-k128-ssim010-validation/summary.json
+
+## Stage 14: One-time post-hoc V2 test evaluation after validation acceptance
+VQVAE_V2_TEST_JOB=$(sbatch --parsable slurm/evaluate_vqvae_v2_test.sh)
+VQVAE_V2_TEST_JOB=${VQVAE_V2_TEST_JOB%%;*}
+echo "$VQVAE_V2_TEST_JOB"
+squeue -j "$VQVAE_V2_TEST_JOB" -o '%.18i %.12P %.22j %.2t %.10M %R'
+
+sacct -j "$VQVAE_V2_TEST_JOB" --format=JobID,JobName,Partition,State,Elapsed,ExitCode,MaxRSS
+tail -n 160 "hipmri_vqvae_v2_test_${VQVAE_V2_TEST_JOB}.out"
+tail -n 120 "hipmri_vqvae_v2_test_${VQVAE_V2_TEST_JOB}.err"
+cat predictions/vqvae-v2-ema-k128-ssim010-test/summary.json
+
 ## After inspection, exit Rangpur and run this from the local Mac terminal
 cd /Users/harris/Documents/26s2/COMP3710/FinalReport/PatternAnalysis-2026/recognition/hipmri-vqvae
 ## Job ID of the recorded formal run; replace this only if the formal job is rerun
@@ -169,3 +197,24 @@ rsync -ah --partial --prune-empty-dirs \
   --exclude='*' \
   s4984233@rangpur.compute.eait.uq.edu.au:/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/ \
   ./
+
+## Retrieve the V2 follow-up evidence without copying checkpoints
+VQVAE_V2_JOB=700009
+VQVAE_V2_TEST_JOB=700978
+rsync -ah --partial --prune-empty-dirs \
+  --include='/outputs/' \
+  --include='/outputs/vqvae-v2-ema-k128-ssim010/' \
+  --include='/outputs/vqvae-v2-ema-k128-ssim010/*.json' \
+  --include='/outputs/vqvae-v2-ema-k128-ssim010/history.csv' \
+  --include='/predictions/' \
+  --include='/predictions/vqvae-v2-ema-k128-ssim010-validation/***' \
+  --include='/predictions/vqvae-v2-ema-k128-ssim010-test/***' \
+  --include="/hipmri_vqvae_v2_${VQVAE_V2_JOB}.out" \
+  --include="/hipmri_vqvae_v2_${VQVAE_V2_JOB}.err" \
+  --include="/hipmri_vqvae_v2_test_${VQVAE_V2_TEST_JOB}.out" \
+  --include="/hipmri_vqvae_v2_test_${VQVAE_V2_TEST_JOB}.err" \
+  --exclude='*' \
+  s4984233@rangpur.compute.eait.uq.edu.au:/home/Student/s4984233/PatternAnalysis-2026/recognition/hipmri-vqvae/ \
+  ./
+
+python make_vqvae_v2_report_assets.py

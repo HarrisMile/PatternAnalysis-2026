@@ -6,17 +6,26 @@
 
 This project tests whether a hard-difficulty VQ-VAE offers a useful fidelity,
 representation, and compute trade-off over a continuous ConvVAE baseline for 2D
-HipMRI reconstruction. Both models were trained from scratch for 40 epochs on the
-same patient-disjoint split and evaluated through validation-only checkpoint selection
-followed by one frozen test evaluation. The ConvVAE achieved test SSIM 0.9185 and MSE
-0.000500, whereas the VQ-VAE achieved SSIM 0.5897 and MSE 0.007269 while activating
-only 13 of 512 codebook entries. Under a fixed batched A100 benchmark, the VQ-VAE was
-also 11.6% slower per slice. Matched failure cases show systematic VQ-VAE smoothing
-at fine structures and intensity boundaries. The evidence therefore supports retaining
-the ConvVAE as the stronger research baseline and not advancing the current VQ-VAE
-checkpoint. All final metrics are frozen; no post-test tuning or retraining is used.
+HipMRI reconstruction. In the primary controlled comparison, both models were trained
+from scratch for 40 epochs on the same patient-disjoint split and evaluated through
+validation-only checkpoint selection followed by one frozen test evaluation. The
+ConvVAE achieved test SSIM 0.9185 and MSE 0.000500, whereas VQ-VAE v1 achieved SSIM
+0.5897 and MSE 0.007269 while activating only 13 of 512 codebook entries. Under a
+fixed batched A100 benchmark, VQ-VAE v1 was also 11.6% slower per slice. Matched
+failure cases show systematic smoothing at fine structures and intensity boundaries,
+so the primary evidence supports retaining the ConvVAE as the stronger research
+baseline.
+
+After the primary V1 test result had been observed, a separately labelled post-hoc
+VQ-VAE v2 follow-up was configured using validation evidence: a 128-entry EMA-updated
+codebook, dead-code revival, an MSE-plus-SSIM objective, and a 60-epoch budget. V2
+reached validation/test SSIM 0.7509/0.7730, reduced test MSE to 0.003335, and used
+128/128 codes. It improved both SSIM and MSE on every matched validation and test
+slice, but it does not replace the original untouched-test comparison and remains
+below the ConvVAE's test SSIM.
+
 An 80-epoch PixelCNN prior, selected at epoch 73 by an internal patient-disjoint
-validation subset of the original training cohort, also completes the hard-route
+validation subset of the original training cohort, completes the original V1 hard-route
 generation pipeline. A formal three-seed audit compares 48 VQ-VAE + PixelCNN samples
 with 48 standard-normal ConvVAE samples and all 11,460 training slices. Neither model
 produces exact duplicate outputs or exact training-image matches; the VQ samples also
@@ -170,6 +179,25 @@ capacity, while perplexity distinguishes nominal use from balanced use. These
 diagnostics are necessary because a VQ-VAE can report a finite reconstruction loss
 while silently mapping nearly every input to only a few codes.
 
+### Post-hoc VQ-VAE v2 stabilisation
+
+VQ-VAE v2 is a separate engineering follow-up designed after the primary V1 test
+result had been observed. It is not folded back into the original controlled
+ConvVAE-V1 comparison. V2 keeps the same encoder, decoder, preprocessing, patient
+splits, optimiser, batch size, learning rate, and random seed, but uses a 128-entry
+64-D codebook updated by exponential moving averages with decay 0.99. A code unused
+for 100 consecutive training batches is re-seeded from the current encoder batch.
+The smaller codebook and revival mechanism directly target V1's severe under-use.
+
+V2 is trained for 60 epochs with the objective
+
+`L_V2 = MSE(x_hat, x) + 0.10 * (1 - SSIM(x_hat, x)) + 0.25 * ||z_e - sg[e]||^2`.
+
+Its checkpoint is selected by highest validation SSIM rather than lowest composite
+loss. These choices and acceptance criteria were fixed before the V2 test run, but
+because the V1 test result motivated the follow-up, the later V2 test result is
+reported explicitly as post-hoc evidence.
+
 ## Experimental setup
 
 ### Dataset and leakage-safe split
@@ -202,7 +230,7 @@ No stochastic data augmentation was used. This keeps both models on exactly the 
 observations and avoids anatomically questionable transformations, but it also limits
 the invariance learned from the relatively small patient cohort.
 
-### Formal training configuration
+### Primary formal training configuration
 
 | Setting | ConvVAE | VQ-VAE |
 | --- | ---: | ---: |
@@ -235,7 +263,15 @@ weights.
 The test split was not used for checkpoint selection. After both formal runs and the
 comparison protocol were frozen, guarded Slurm job `644134` evaluated the two selected
 checkpoints once. Their SHA-256 hashes are reported with the final results. No model
-changes or hyperparameter decisions were made after viewing test performance.
+changes or hyperparameter decisions were made after viewing test performance within
+this primary comparison.
+
+VQ-VAE v2 is governed by a separate boundary. Its configuration was chosen after the
+primary V1 test result was known, then trained and selected using training/validation
+data only. After it passed the predeclared validation criteria of SSIM above 0.6 and
+at least 32 active codes, Slurm job `700978` evaluated its selected checkpoint on the
+test split once. This is a post-hoc follow-up and is never described as an untouched
+replacement for the primary test result.
 
 ### Evaluation metrics
 
@@ -323,7 +359,8 @@ The generated manifest contains relative MRI/mask paths plus patient, week, slic
 
 `train.py` evaluates the validation split after every epoch and writes:
 
-- `best.pt`: checkpoint with the lowest validation loss;
+- `best.pt`: checkpoint selected by the configured validation metric (lowest loss for
+  the primary models, highest SSIM for VQ-VAE v2);
 - `last.pt`: checkpoint from the most recent epoch;
 - `history.csv`: per-epoch loss, reconstruction metrics, timings, and VQ codebook statistics;
 - `config.json`: data, optimiser, reproducibility, software, device, and parameter-count settings;
@@ -504,12 +541,14 @@ error log.
 The Rangpur workflow reuses the `comp3710lab2` Conda environment and the course account/partition pattern that was verified in earlier COMP3710 work. A live check on 8 October 2026 confirmed that the `comp3710` partition is available with A100 GPUs, the user account is associated with the `comp3710` Slurm account under normal QOS, and the existing environment contains CUDA-enabled PyTorch 2.14.0. `nibabel` was the only required package missing before installing this project's requirements. Because cluster configuration can change, run `sinfo` before every new submission and compare it with the current [EAIT Compute documentation](https://student.eait.uq.edu.au/infrastructure/compute/).
 
 The complete login, setup, submission, monitoring, and log-inspection sequence is in
-`RANGPUR_COMMANDS.txt`. Nine Slurm scripts are provided:
+`RANGPUR_COMMANDS.txt`. Eleven Slurm scripts are provided:
 
 - `slurm/gpu_sanity.sh`: short validation-only ConvVAE and VQ-VAE GPU pipeline check;
 - `slurm/train_vae.sh`: formal ConvVAE baseline training and validation evaluation;
 - `slurm/train_vqvae.sh`: formal VQ-VAE training and validation evaluation under the same defaults;
 - `slurm/evaluate_test.sh`: guarded one-time test evaluation of both frozen checkpoints;
+- `slurm/train_vqvae_v2.sh`: validation-led VQ-VAE v2 post-hoc training and acceptance check;
+- `slurm/evaluate_vqvae_v2_test.sh`: guarded one-time post-hoc V2 test evaluation;
 - `slurm/benchmark_latency.sh`: validation-only A100 timing of both frozen checkpoints;
 - `slurm/export_code_indices.sh`: train-only extraction of frozen VQ code-index grids
   for learned-prior training;
@@ -520,11 +559,11 @@ The complete login, setup, submission, monitoring, and log-inspection sequence i
 - `slurm/sample_generators.sh`: formal same-seed ConvVAE and VQ-VAE + PixelCNN
   sampling, full training-neighbour audit, five-case failure analysis, and comparison.
 
-The reconstruction jobs used 40 epochs, while the learned prior used 80 epochs after
-validation continued improving at epoch 40. All formal training used batch size 64,
-learning rate `2e-4`, seed 3710, four data workers, and one GPU. The scripts retain
-environment-variable overrides for reproducibility checks, but the frozen results use
-these stated values.
+The primary reconstruction jobs used 40 epochs, the V2 follow-up used 60 epochs, and
+the learned V1 prior used 80 epochs after validation continued improving at epoch 40.
+All training used batch size 64, learning rate `2e-4`, seed 3710, four data workers,
+and one GPU. The scripts retain environment-variable overrides for reproducibility
+checks, but the reported results use these stated values.
 
 Every epoch writes `last.pt`; the best validation checkpoint remains in `best.pt`. If Slurm requeues a job, the scripts detect `last.pt` and pass `--resume`. The trainer restores the model, optimiser, epoch history, and PyTorch random state. A local interrupted-versus-continuous test produced identical metric histories and exactly equal final model weights.
 
@@ -542,7 +581,7 @@ An intentionally limited CPU run also verified the full artifact pipeline. The C
 
 The revised A100 sanity job `642126` completed successfully in 46 seconds with exit code `0:0`, an empty error log, and peak host memory of about 1.74 GiB. Across five deliberately limited VQ-VAE epochs, validation active-code count changed from 7 to 16, 25, 29, and 27; validation perplexity increased from 1.66 to 7.78; PSNR increased from 10.72 to 17.64 dB; and SSIM increased from 0.1257 to 0.2977. This confirms that the single-code collapse was removed, although the remaining sparse utilisation must still be monitored during formal training. All sanity results are diagnostic only and must not be presented as final model-quality evidence.
 
-## Frozen validation results
+## Primary frozen validation results
 
 In Figures 1-4, the ConvVAE is the continuous-latent baseline and the VQ-VAE is
 the hard-difficulty advanced model. Both use the same official patient-disjoint
@@ -586,7 +625,7 @@ more balanced within that small active subset, but 498 of 512 entries remain unu
 This is partial codebook collapse: the model is not mapping everything to one entry,
 yet most of the intended discrete capacity contributes nothing to the representation.
 
-## Final one-time test results
+## Primary one-time test results
 
 Slurm job `644134` evaluated all 540 slices from held-out patients 040–042 once,
 completed in 22 seconds with exit code `0:0`, and produced an empty error log.
@@ -632,6 +671,42 @@ index level, but the chosen 512-entry codebook is heavily under-utilised and its
 reconstruction loss is substantial. Under this controlled budget, the ConvVAE
 is the recommended model for HipMRI reconstruction quality and stability.
 
+## Post-hoc VQ-VAE v2 reconstruction follow-up
+
+The primary V1 test result motivated a later validation-led stabilisation experiment.
+V2 reduced the codebook from 512 to 128 entries, used EMA updates with dead-code
+revival, added a structural-loss term, trained for 60 epochs, and selected epoch 60
+by validation SSIM. The run took 2,686.6 seconds on one A100, allocated 1,362.4 MiB
+of peak CUDA memory, and used 468,385 trainable parameters.
+
+| Split | Model | MSE | MAE | PSNR | SSIM | Active codes | Perplexity |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Validation | Primary V1 | 0.007637 | 0.055121 | 21.312 dB | 0.5579 | 14/512 | 10.30 |
+| Validation | Post-hoc V2 | 0.003683 | 0.037116 | 24.522 dB | 0.7509 | 128/128 | 110.71 |
+| Test | Primary V1 | 0.007269 | 0.051884 | 21.585 dB | 0.5897 | 13/512 | 10.46 |
+| Test | Post-hoc V2 | 0.003335 | 0.033971 | 24.999 dB | 0.7730 | 128/128 | 108.87 |
+
+V2 passed both predeclared validation gates and improved SSIM and MSE on all 660
+matched validation slices. Guarded Slurm job `700978` then evaluated the fixed epoch-60
+checkpoint once on all 540 test slices; it completed with an empty error log. V2
+improved SSIM and MSE on 540/540 matched test slices, with mean paired SSIM increasing
+by 0.1833 and mean paired MSE decreasing by 0.003934. Test foreground SSIM is 0.7424,
+so the gain is not an artefact of padded background. The checkpoint SHA-256 is
+`00f9c3ce816a993bfd9ed82d62bdc7d6be3f01b794eb193022adc1f3be208e5d`.
+
+![Highest-MSE VQ-VAE v2 test reconstructions](report_assets/vqvae_v2_followup/worst_reconstructions.png)
+
+*Figure 5. Deterministically selected highest-MSE cases from the post-hoc V2 test run.*
+
+Even these cases preserve the gross anatomical layout without catastrophic spatial
+displacement or checkerboard artefacts, although fine texture and tissue boundaries
+remain visibly smoothed. V2 therefore resolves the approximate 0.6 reconstruction
+target and the V1 codebook-collapse problem within this follow-up, but it remains below
+the ConvVAE test SSIM of 0.9185. Because V2 was designed after V1 test exposure, it is
+supporting engineering evidence rather than a replacement untouched-test comparison.
+The existing PixelCNN prior was trained on V1's 512-entry code space and is incompatible
+with V2's 128-entry codebook; no unconditional-generation result is claimed for V2.
+
 ## Matched qualitative failure autopsies
 
 Here, a *failure case* means a lower-performing model/data example, not a coding
@@ -641,18 +716,18 @@ maximum VQ-VAE MSE. Both models are then rendered on the identical input. The er
 maps within each row use the same colour scale, so their intensity is directly
 comparable within that row but not across different rows.
 
-Figure 5 provides concrete example inputs and outputs: every row begins with the
+Figure 6 provides concrete example inputs and outputs: every row begins with the
 normalised MRI input, followed by the ConvVAE and VQ-VAE reconstructions, their error
 maps, and the evaluation-only anatomical mask.
 
 ![Matched originals, ConvVAE and VQ-VAE reconstructions, error maps and masks](report_assets/matched_test_reconstructions.png)
 
-*Figure 5. Deterministically selected matched reconstructions from all three held-out patients.*
+*Figure 6. Deterministically selected matched reconstructions from all three held-out patients.*
 
 The five cases below include all three patient-specific maxima plus two median-error
 examples. This covers every held-out patient while testing whether the observed pattern
 also occurs away from the extrema. The unused patient 041 median example remains in
-Figure 5 and `matched_test_selection.csv` for auditability.
+Figure 6 and `matched_test_selection.csv` for auditability.
 
 | Case | Selection basis | ConvVAE MSE / SSIM | VQ-VAE MSE / SSIM |
 | --- | --- | ---: | ---: |
@@ -748,7 +823,7 @@ generative training and audit reference.
 
 ![Uncurated same-seed ConvVAE and VQ-VAE plus PixelCNN samples](report_assets/generative_baseline_comparison/uncurated_multiseed_comparison.png)
 
-*Figure 6. The first four outputs per model and seed in generation order. The panel is uncurated: no image was retained or rejected by visual quality.*
+*Figure 7. The first four outputs per model and seed in generation order. The panel is uncurated: no image was retained or rejected by visual quality.*
 
 Both models fail visually, but in different ways. The ConvVAE's direct standard-normal
 samples are dominated by high-frequency texture without recognisable anatomy. The
@@ -778,7 +853,7 @@ guarantee.
 
 ![Generated VQ samples beside their closest training slices and absolute errors](report_assets/generative_evaluation_multiseed/nearest_training_neighbours.png)
 
-*Figure 7. The eight VQ samples with the lowest full-resolution MSE to their nearest training slice after searching all 11,460 training slices.*
+*Figure 8. The eight VQ samples with the lowest full-resolution MSE to their nearest training slice after searching all 11,460 training slices.*
 
 Even the closest pairs remain visually and structurally different. Their low SSIM and
 large absolute-error regions support the numerical conclusion that no close copy was
@@ -799,7 +874,7 @@ visually cherry-picked and the score is not a clinical abnormality measure.
 
 ![Five deterministically selected VQ generation failures](report_assets/generative_evaluation_multiseed/generation_failure_cases.png)
 
-*Figure 8. Each row shows a generated failure, its closest training slice, and absolute error. Selection is determined by the predefined feature-deviation score.*
+*Figure 9. Each row shows a generated failure, its closest training slice, and absolute error. Selection is determined by the predefined feature-deviation score.*
 
 All five cases show extreme vertical mass displacement associated with black bands,
 truncated content, or tissue concentrated at one edge. This is a systematic spatial-
@@ -808,7 +883,7 @@ apparently reasonable code-frequency coverage does not establish realistic gener
 
 ![Frozen-decoder interpolation between training-neighbour and generated VQ embeddings](report_assets/generative_evaluation_multiseed/latent_interpolation.png)
 
-*Figure 9. Seven-point linear embedding interpolations from a nearest training-code decode at alpha 0 to a generated sample at alpha 1. Four pairs are selected at evenly spaced ranks across the complete nearest-training MSE distribution.*
+*Figure 10. Seven-point linear embedding interpolations from a nearest training-code decode at alpha 0 to a generated sample at alpha 1. Four pairs are selected at evenly spaced ranks across the complete nearest-training MSE distribution.*
 
 The median of the four row-wise mean adjacent-frame SSIM values is `0.823`, and the
 lowest adjacent-frame SSIM is `0.775`. The frozen decoder therefore changes its output
@@ -832,7 +907,9 @@ the learned discrete-data manifold.
   trained VQ-VAE and one trained prior, and all ConvVAE samples come from one trained
   baseline checkpoint. This is a controlled engineering comparison, not proof that
   ConvVAEs always outperform VQ-VAEs. No multi-seed model training, cross-validation,
-  data augmentation, or architecture ablation was run.
+  data augmentation, or architecture ablation was run. V2 adds only one post-hoc
+  configuration and seed, so its consistent slice-level improvement does not establish
+  robustness across retraining runs.
 - **Two-dimensional and intensity-normalised input:** each slice is reconstructed
   independently, so through-plane anatomical context is absent. Per-slice percentile
   normalisation improves numerical consistency but removes absolute scanner-intensity
@@ -841,12 +918,20 @@ the learned discrete-data manifold.
 - **Low-quality generative result:** the learned prior enables unconditional sampling,
   and the 48-sample, three-seed VQ audit detects neither exact training copies nor
   duplicate outputs. The same-size ConvVAE sample cohort provides a baseline, but both
-  generators are visually poor. The VQ-VAE also remains below the approximate 0.6
-  paired-reconstruction SSIM target on validation (0.5579) and test (0.5897), and its
-  generated image-space features show large distribution shifts. The interpolation
-  paths are locally continuous but pass through visibly implausible structures outside
-  the discrete codebook support. This engineering-scale audit cannot establish
-  clinical realism, population coverage, or privacy.
+  generators are visually poor. The original V1 model used by the PixelCNN remains
+  below the approximate 0.6 paired-reconstruction SSIM target on validation (0.5579)
+  and test (0.5897), and its generated image-space features show large distribution
+  shifts. V2 exceeds the reconstruction target, but its incompatible 128-entry code
+  space has no trained prior and therefore no unconditional-generation result. The V1
+  interpolation paths are locally continuous but pass through visibly implausible
+  structures outside the discrete codebook support. This engineering-scale audit
+  cannot establish clinical realism, population coverage, or privacy.
+- **Post-hoc V2 evidence:** V2 was designed after the primary V1 test outcome was
+  known. Its hyperparameters and checkpoint were selected without further test access,
+  and its selected checkpoint was evaluated on test once, but the resulting 0.7730
+  SSIM is still confirmatory engineering evidence rather than a new untouched-test
+  estimate. A new held-out patient cohort would be required for an unbiased final
+  comparison of V2 against the ConvVAE.
 - **Metric and safety boundary:** MSE, MAE, PSNR, SSIM, mask-region scores, and visual
   inspection measure image similarity, not diagnostic correctness. There was no
   radiologist assessment, downstream clinical task, subgroup/fairness analysis,
@@ -864,20 +949,26 @@ better whole-image and foreground reconstruction, stable patient-level results, 
 slightly better throughput under the same budget. This is a conditional research
 recommendation, not approval for clinical deployment.
 
-Do **not** advance the current VQ-VAE and prior to downstream use. The experimental
-prior was trained only to complete and audit the required hard-route pipeline. Its
-decoder uses only 2.54% of the test codebook, misses the stated SSIM target, produces
-systematic boundary smoothing, and is 11.6% slower per slice in the fixed batched
-benchmark. The random samples add substantial anatomical fragmentation. Preserve the
-complete pipeline as a valid negative result rather than tuning against the observed
-test set or presenting it as a clinically useful generator.
+Do **not** advance the original V1 VQ-VAE and PixelCNN prior to downstream use. The
+experimental prior was trained only to complete and audit the required hard-route
+pipeline. Its decoder uses only 2.54% of the test codebook, misses the stated SSIM
+target, produces systematic boundary smoothing, and is 11.6% slower per slice in the
+fixed batched benchmark. The random samples add substantial anatomical fragmentation.
+Preserve that complete pipeline as a valid negative result rather than presenting it
+as a clinically useful generator.
 
-If a later project revisits the VQ route, it should define a new untouched test
-protocol and investigate codebook size/regularisation using validation data only,
-repeat model and prior training across seeds, expand the patient cohort, and evaluate
-2.5D or 3D context. A stronger prior and larger diversity/privacy audit, external-site
-validation, and domain-expert review should occur only after reconstruction and code
-utilisation meet predeclared acceptance criteria.
+V2 is the more credible discrete reconstruction candidate: it clears the reconstruction
+target and eliminates dead codes. It is still not preferred over the ConvVAE, has only
+one post-hoc training run, and cannot use the existing V1 prior. Advancing V2 would
+require a new untouched patient cohort, repeated training seeds, a newly trained prior,
+and a fresh generative diversity and memorisation audit.
+
+If a later project revisits the VQ route, it should begin from the V2 stabilisation,
+define a new untouched test protocol, repeat model and prior training across seeds,
+expand the patient cohort, and evaluate 2.5D or 3D context. A newly matched prior and
+larger diversity/privacy audit, external-site validation, and domain-expert review
+should occur only after reconstruction and code utilisation meet predeclared
+acceptance criteria across repeated runs.
 
 ## Reproducible report assets
 
@@ -907,6 +998,14 @@ The independent A100 timing evidence is stored in
 identity, source commit, and checkpoint hashes; the CSV provides the two concise rows
 used in the report.
 
+The separate post-hoc reconstruction evidence is generated with
+`python make_vqvae_v2_report_assets.py`. It verifies identical V1/V2 slice identifiers,
+computes paired validation/test improvements, checks the empty V2 error log, extracts
+the checkpoint hash and Slurm provenance, and writes the tracked tables, summary, and
+worst-case panel under `report_assets/vqvae_v2_followup/`. This separation prevents
+the V2 result from being confused with the primary untouched-test comparison or the
+V1 generative pipeline.
+
 The formal VQ generative evidence is stored under
 `report_assets/generative_evaluation_multiseed/`. `REPORT_RESULTS.md` gives the concise
 interpretation; `summary.json` retains hashes, protocol details, and complete metrics;
@@ -927,6 +1026,8 @@ tables, and figures preserve the report evidence without committing bulky artifa
 - `predict.py`: safe checkpoint loading, per-sample evaluation, and failure-case visualisation.
 - `benchmark_latency.py`: frozen-checkpoint validation benchmark and CSV/JSON evidence generation.
 - `make_report_assets.py`: frozen-result verification and reproducible report figures/tables.
+- `make_vqvae_v2_report_assets.py`: paired post-hoc V1/V2 reconstruction evidence and
+  protocol-boundary reporting.
 - `export_code_indices.py`: train-only VQ code-grid export with split and provenance guards.
 - `train_prior.py`: patient-disjoint PixelCNN-prior training, validation, and resume support.
 - `sample_prior.py`: unconditional VQ code sampling and matching-checkpoint image decoding.
@@ -959,10 +1060,11 @@ tables, and figures preserve the report evidence without committing bulky artifa
   The direct dependencies and version ranges are declared in `requirements.txt`.
 - **Compute and evidence:** formal reconstruction training, prior training, random
   sampling, test evaluation, and latency measurement ran on UQ Rangpur A100 nodes.
-  `make_report_assets.py` and `evaluate_generation.py` generate the tracked figures and
-  tables from frozen artifacts, while the JSON evidence retains job context, selection
-  rules, hashes, device metadata, and source information. Dataset files, per-slice raw
-  outputs, generated arrays, and checkpoints are intentionally not tracked.
+  `make_report_assets.py`, `make_vqvae_v2_report_assets.py`, and
+  `evaluate_generation.py` generate the tracked figures and tables from frozen
+  artifacts, while the JSON evidence retains job context, selection rules, hashes,
+  device metadata, and source information. Dataset files, per-slice raw outputs,
+  generated arrays, and checkpoints are intentionally not tracked.
 
 ## Artificial Intelligence Usage Disclosure
 
@@ -998,6 +1100,8 @@ AI-assisted code and claims were verified through the following project evidence
   exact source-archive hash checks, a full 11,460-slice nearest-neighbour audit, five
   deterministically selected generation failures, and a frozen-decoder latent-
   interpolation diagnostic; and
+- a separately labelled VQ-VAE v2 validation-led follow-up, followed by one fixed
+  post-hoc test evaluation and paired per-slice verification against V1; and
 - direct inspection of saved metrics, training curves, codebook statistics, matched
   reconstructions, unconditional samples, nearest neighbours, and failure cases before
   including numerical claims in the report.
