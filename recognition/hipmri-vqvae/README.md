@@ -206,11 +206,11 @@ The source data are the course-provided HipMRI 2D NIfTI slices. Raw data are loc
 
 | Split | MRI slices | Masks | Patient IDs |
 | --- | ---: | ---: | --- |
-| Train | 11,460 | 11,460 | 004–033 and 035 |
-| Validation | 660 | 660 | 036–039 |
-| Test | 540 | 540 | 040–042 |
+| Train | 11,460 | 11,460 | 004-033 and 035 |
+| Validation | 660 | 660 | 036-039 |
+| Test | 540 | 540 | 040-042 |
 
-The filename key `(patient, week, slice)` pairs every MRI with exactly one segmentation mask. The patient sets are disjoint across all three splits. Of the 12,660 MRI slices, 12,600 have shape `256 x 128`; the 60 slices from patient 019 have shape `256 x 144`. MRI values are non-negative `float32`; masks are `uint8` labels with observed values 0–5. The course-provided split membership was retained, but programmatic assertions prevent a patient from appearing in more than one split.
+The filename key `(patient, week, slice)` pairs every MRI with exactly one segmentation mask. The patient sets are disjoint across all three splits. Of the 12,660 MRI slices, 12,600 have shape `256 x 128`; the 60 slices from patient 019 have shape `256 x 144`. MRI values are non-negative `float32`; masks are `uint8` labels with observed values 0-5. The course-provided split membership was retained, but programmatic assertions prevent a patient from appearing in more than one split.
 
 ### Deterministic preprocessing
 
@@ -627,7 +627,7 @@ yet most of the intended discrete capacity contributes nothing to the representa
 
 ## Primary one-time test results
 
-Slurm job `644134` evaluated all 540 slices from held-out patients 040–042 once,
+Slurm job `644134` evaluated all 540 slices from held-out patients 040-042 once,
 completed in 22 seconds with exit code `0:0`, and produced an empty error log.
 The frozen checkpoint hashes were:
 
@@ -806,7 +806,7 @@ or evidence that a reconstruction is medically acceptable.
 The learned prior was trained only on frozen VQ indices from the original training
 cohort. Twenty-five training patients (9,540 slices) updated the prior, while six
 different training-cohort patients (1,920 slices) selected the checkpoint. Official
-validation patients 036–039 and test patients 040–042 were excluded from both subsets.
+validation patients 036-039 and test patients 040-042 were excluded from both subsets.
 The initial 40-epoch job and its 40-to-80 continuation took 131.7 seconds of measured
 training time in total. Validation selected epoch 73.
 
@@ -816,7 +816,7 @@ the two models. All image-space comparisons use the complete 11,460-slice traini
 cohort as the reference; the official validation and test splits remain outside the
 generative training and audit reference.
 
-| Model | Samples / seeds | Pairwise MSE median | Mean absolute feature shift | Feature values inside train P05–P95 | Nearest-train SSIM median | Sampling time | Peak accelerator memory |
+| Model | Samples / seeds | Pairwise MSE median | Mean absolute feature shift | Feature values inside train P05-P95 | Nearest-train SSIM median | Sampling time | Peak accelerator memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | ConvVAE | 48 / 3 | 0.0614 | 1.114 SD | 77.7% | 0.065 | 36.63 ms/image | 222.6 MiB |
 | VQ-VAE + PixelCNN | 48 / 3 | 0.0687 | 1.429 SD | 47.0% | 0.256 | 203.90 ms/image | 114.6 MiB |
@@ -841,13 +841,13 @@ code-frequency agreement does not transfer to image-space coverage: near-zero ar
 `2.49` training standard deviations above the training mean, tissue area is `1.40`
 standard deviations below it, and vertical centre of mass is shifted by `3.93`
 standard deviations. Only 10.4% of generated near-zero fractions and 22.9% of vertical
-centres lie inside the corresponding training 5th–95th percentile interval.
+centres lie inside the corresponding training 5th-95th percentile interval.
 
 Neither 48-sample cohort contains an exact duplicate generated image or an exact
 training-image match. The VQ cohort additionally contains no duplicate generated code
 grid and no exact training code-grid match. Its nearest-training full-resolution SSIM
-has median `0.256` and range `0.133`–`0.330`; the nearest code grid still differs at a
-median 67.2% of positions, with range 58.2%–80.7%. These checks provide evidence
+has median `0.256` and range `0.133`-`0.330`; the nearest code grid still differs at a
+median 67.2% of positions, with range 58.2%-80.7%. These checks provide evidence
 against direct copying under the stated definitions, but they are not a formal privacy
 guarantee.
 
@@ -1126,7 +1126,7 @@ correctness of the submitted code, analysis, and conclusions.
    Library,” *Advances in Neural Information Processing Systems 32*, 2019.
    [Official proceedings](https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html).
 5. The University of Queensland, “COMP3710/7710 Pattern Recognition Final Report
-   Specification,” version 2.5, 2026. Internal course material.
+   Specification,” version 2.2, 2026. Internal course material.
 6. A. van den Oord, N. Kalchbrenner, L. Espeholt, K. Kavukcuoglu, O. Vinyals, and
    A. Graves, “Conditional Image Generation with PixelCNN Decoders,” *Advances in
    Neural Information Processing Systems 29*, 2016.
