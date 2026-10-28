@@ -322,38 +322,62 @@ for resource comparison; it did not change either model or any selection decisio
 The benchmark source commit was `b8f0ee2`, and the checkpoint hashes match those used
 for the one-time test evaluation.
 
-## Environment and manifest
+## Runtime environment, installation, and manifest
 
-The formal Rangpur runs used the following recorded environment. Exact Python and
-PyTorch versions are stored in both training configs; the NumPy version is retained
-in the latency artifact; and the NiBabel and Matplotlib versions were captured during
-the formal environment setup.
+All formal training, checkpoint selection, test evaluation, latency measurement, and
+generative-audit results reported in this README were produced on the UQ EAIT Rangpur
+batch-compute system. The jobs used the course `comp3710` Slurm account and partition,
+the existing `comp3710lab2` Conda environment, one A100 GPU, and four CPU workers.
+The recorded formal environment was:
 
-| Component | Formal version / device |
+| Component | Formal runtime |
 | --- | --- |
+| Host system | UQ EAIT Rangpur, Slurm `comp3710` partition/account |
+| Operating system | Linux x86_64, kernel `4.18.0-553.148.1.el8_10`, glibc 2.28 |
+| Conda environment | `comp3710lab2` |
 | Python | 3.11.16 |
 | PyTorch | 2.14.0+cu130 |
-| CUDA build used by PyTorch | 13.0 |
+| CUDA runtime used by PyTorch | 13.0 |
+| NVIDIA driver | 590.48.01 (`nvidia-smi` reported CUDA compatibility 13.1) |
+| cuDNN | 9.2.4 (`torch.backends.cudnn.version() = 92400`) |
 | NumPy | 2.4.6 |
 | NiBabel | 5.4.2 |
 | Matplotlib | 3.11.2 |
-| Training accelerator | NVIDIA A100-PCIE-40GB |
+| Accelerator | 1 x NVIDIA A100-PCIE-40GB, compute capability 8.0, 40 GB VRAM |
+| Slurm CPU allocation | 4 CPUs per task |
 
-`requirements.txt` retains compatible version bounds for installation, while the
-table above records the exact environment used for the reported results.
+The PyTorch CUDA runtime and the maximum CUDA version reported by `nvidia-smi` are
+different values and are recorded separately above. Exact Python, PyTorch, device,
+and training settings are retained in each run's `config.json`; the fuller platform,
+NumPy, CUDA, and cuDNN record is retained in
+`report_assets/inference_latency/summary.json`. `requirements.txt` provides compatible
+installation bounds, while the table records the exact environment used to produce
+the reported results.
 
-From this directory:
+To reproduce the project on Rangpur, log in to the cluster and run from the repository
+root:
 
 ```bash
-conda activate 3710torch
+source "$HOME/miniconda3/bin/activate"
+conda activate comp3710lab2
+cd recognition/hipmri-vqvae
 python -m pip install -r requirements.txt
 
 python dataset.py \
-  --data-root data/keras_slices_data \
+  --data-root /home/groups/comp3710/HipMRI_Study_open/keras_slices_data \
   --output data/manifest.csv
+
+# Example formal model submission; the other stages have matching scripts in slurm/.
+sbatch slurm/train_vqvae.sh
 ```
 
-The generated manifest contains relative MRI/mask paths plus patient, week, slice, and split identifiers. Both the raw data and manifest remain under the ignored `data/` directory.
+For a local CPU/MPS smoke test, the same dependencies can instead be installed in the
+local `3710torch` environment. Local runs are for code and data-pipeline checks only;
+the reported performance and timing results come from the Rangpur environment above.
+
+The generated manifest contains relative MRI/mask paths plus patient, week, slice, and
+split identifiers. Both the raw data and manifest remain under the ignored `data/`
+directory.
 
 ## Training and validation
 
